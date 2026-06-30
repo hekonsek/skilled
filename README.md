@@ -1,0 +1,18 @@
+# skilled
+
+`skilled` is a CLI tool for working with agentic AI skills.
+
+## Development
+
+```sh
+npm ci
+npm run build
+npm test
+```
+
+## Commands
+
+```sh
+skilled version
+skilled repo list
+```
