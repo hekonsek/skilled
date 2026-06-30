@@ -3,6 +3,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createCli } from "../../../../src/adapters/in/cli/cli.js";
 import type {
+  SkillsRepositoryBuildConfig,
+  SkillsRepositoryBuildConfigReader,
+  SkillsRepositoryCloner,
   SkillsRepository,
   SkillsRepositoryStore,
 } from "../../../../src/services/repositories/skills-repositories.service.js";
@@ -36,6 +39,54 @@ describe("createCli", () => {
 
     assert.equal(stdout.toString(), "📦 myorg/skills\n📦 myuser/myskills\n");
   });
+
+  it("builds a skills repository from the configured directory", async () => {
+    const stdout = new MemoryWritable();
+    const cloner = new RecordingSkillsRepositoryCloner();
+
+    await createCli({
+      version: "1.2.3",
+      stdout,
+      stderr: new MemoryWritable(),
+      repositoryStore: new StaticSkillsRepositoryStore([]),
+      buildConfigReader: new StaticSkillsRepositoryBuildConfigReader({
+        skills: [
+          { owner: "myorg", name: "skills" },
+          { owner: "myuser", name: "myskills" },
+        ],
+      }),
+      repositoryCloner: cloner,
+    }).parseAsync(["node", "skilled", "repo", "build", "--dir", "/workspace/skills"]);
+
+    assert.equal(
+      stdout.toString(),
+      "📦 myorg/skills -> myorg-skills\n📦 myuser/myskills -> myuser-myskills\n",
+    );
+    assert.deepEqual(cloner.cloneRequests, [
+      {
+        repository: { owner: "myorg", name: "skills" },
+        destinationDirectory: "/workspace/skills/myorg-skills",
+      },
+      {
+        repository: { owner: "myuser", name: "myskills" },
+        destinationDirectory: "/workspace/skills/myuser-myskills",
+      },
+    ]);
+  });
+
+  it("lists the build directory option in help output", async () => {
+    const program = createCli({
+      version: "1.2.3",
+      stdout: new MemoryWritable(),
+      stderr: new MemoryWritable(),
+    });
+    const repoCommand = program.commands.find((command) => command.name() === "repo");
+    const buildCommand = repoCommand?.commands.find(
+      (command) => command.name() === "build",
+    );
+
+    assert.match(buildCommand?.helpInformation() ?? "", /--dir <directory>/);
+  });
 });
 
 class StaticSkillsRepositoryStore implements SkillsRepositoryStore {
@@ -43,6 +94,30 @@ class StaticSkillsRepositoryStore implements SkillsRepositoryStore {
 
   async listDownloadedRepositories(): Promise<readonly SkillsRepository[]> {
     return this.repositories;
+  }
+}
+
+class StaticSkillsRepositoryBuildConfigReader
+  implements SkillsRepositoryBuildConfigReader
+{
+  constructor(private readonly buildConfig: SkillsRepositoryBuildConfig) {}
+
+  async readBuildConfig(): Promise<SkillsRepositoryBuildConfig> {
+    return this.buildConfig;
+  }
+}
+
+class RecordingSkillsRepositoryCloner implements SkillsRepositoryCloner {
+  readonly cloneRequests: {
+    readonly repository: SkillsRepository;
+    readonly destinationDirectory: string;
+  }[] = [];
+
+  async cloneRepository(
+    repository: SkillsRepository,
+    destinationDirectory: string,
+  ): Promise<void> {
+    this.cloneRequests.push({ repository, destinationDirectory });
   }
 }
 

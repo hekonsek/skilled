@@ -3,6 +3,8 @@ import chalk from "chalk";
 import { Command, Option } from "commander";
 import pino, { type LevelWithSilent } from "pino";
 import {
+  type SkillsRepositoryBuildConfigReader,
+  type SkillsRepositoryCloner,
   LocalSkillsRepositoryStore,
   SkillsRepositoriesService,
   type SkillsRepositoryStore,
@@ -23,10 +25,17 @@ export interface CreateCliOptions {
   readonly stdout?: NodeJS.WritableStream;
   readonly stderr?: NodeJS.WritableStream;
   readonly repositoryStore?: SkillsRepositoryStore;
+  readonly buildConfigReader?: SkillsRepositoryBuildConfigReader;
+  readonly repositoryCloner?: SkillsRepositoryCloner;
+  readonly currentDirectory?: string;
 }
 
 interface GlobalOptions {
   readonly logger: LevelWithSilent;
+}
+
+interface BuildCommandOptions {
+  readonly dir?: string;
 }
 
 export function createCli(options: CreateCliOptions): Command {
@@ -73,6 +82,37 @@ export function createCli(options: CreateCliOptions): Command {
 
       if (repositories.length === 0) {
         stderr.write("No skills repositories downloaded.\n");
+      }
+    });
+
+  repo
+    .command("build")
+    .description("Build the skills repository in the current directory.")
+    .option("--dir <directory>", "root directory of the skills monorepo")
+    .action(async (buildOptions: BuildCommandOptions) => {
+      const globalOptions = program.opts<GlobalOptions>();
+      const logger = pino(
+        { level: globalOptions.logger },
+        pino.destination({ dest: 2, sync: true }),
+      ).child({ adapter: "cli", command: "repo build" });
+
+      const service = new SkillsRepositoriesService(
+        options.repositoryStore ?? new LocalSkillsRepositoryStore(),
+        logger,
+        {
+          buildConfigReader: options.buildConfigReader,
+          repositoryCloner: options.repositoryCloner,
+        },
+      );
+      const result = await service.buildRepository({
+        repositoryDirectory:
+          buildOptions.dir ?? options.currentDirectory ?? process.cwd(),
+      });
+
+      for (const builtRepository of result.repositories) {
+        stdout.write(
+          `${repositoryMarker(stdout)} ${builtRepository.repository.owner}/${builtRepository.repository.name} -> ${builtRepository.directory}\n`,
+        );
       }
     });
 

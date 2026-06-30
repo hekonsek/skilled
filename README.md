@@ -15,4 +15,5 @@ npm test
 ```sh
 skilled version
 skilled repo list
+skilled repo build [--dir <directory>]
 ```

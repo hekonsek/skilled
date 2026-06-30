@@ -1,7 +1,12 @@
-import { readdir } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { readFile, readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import type { Logger } from "pino";
+import { parse } from "yaml";
+
+const execFile = promisify(execFileCallback);
 
 export interface SkillsRepository {
   readonly owner: string;
@@ -10,6 +15,39 @@ export interface SkillsRepository {
 
 export interface SkillsRepositoryStore {
   listDownloadedRepositories(): Promise<readonly SkillsRepository[]>;
+}
+
+export interface SkillsRepositoryBuildConfig {
+  readonly skills: readonly SkillsRepository[];
+}
+
+export interface SkillsRepositoryBuildConfigReader {
+  readBuildConfig(repositoryDirectory: string): Promise<SkillsRepositoryBuildConfig>;
+}
+
+export interface SkillsRepositoryCloner {
+  cloneRepository(repository: SkillsRepository, destinationDirectory: string): Promise<void>;
+}
+
+export interface SkillsRepositoryGitMetadataRemover {
+  removeGitMetadata(repositoryDirectory: string): Promise<void>;
+}
+
+export interface SkillsRepositoryDirectoryRemover {
+  removeRepositoryDirectory(repositoryDirectory: string): Promise<void>;
+}
+
+export interface BuildSkillsRepositoryOptions {
+  readonly repositoryDirectory: string;
+}
+
+export interface BuiltSkillsRepository {
+  readonly repository: SkillsRepository;
+  readonly directory: string;
+}
+
+export interface BuildSkillsRepositoryResult {
+  readonly repositories: readonly BuiltSkillsRepository[];
 }
 
 export interface LocalSkillsRepositoryStoreOptions {
@@ -41,20 +79,109 @@ export class LocalSkillsRepositoryStore implements SkillsRepositoryStore {
   }
 }
 
+export class LocalSkillsRepositoryBuildConfigReader
+  implements SkillsRepositoryBuildConfigReader
+{
+  async readBuildConfig(repositoryDirectory: string): Promise<SkillsRepositoryBuildConfig> {
+    const configPath = join(repositoryDirectory, "skilled-repo.yml");
+    const config = parse(await readFile(configPath, "utf8")) as unknown;
+
+    return {
+      skills: parseSkills(config),
+    };
+  }
+}
+
+export class GitSkillsRepositoryCloner implements SkillsRepositoryCloner {
+  async cloneRepository(
+    repository: SkillsRepository,
+    destinationDirectory: string,
+  ): Promise<void> {
+    await execFile("git", ["clone", repositoryUrl(repository), destinationDirectory]);
+  }
+}
+
+export class LocalSkillsRepositoryGitMetadataRemover
+  implements SkillsRepositoryGitMetadataRemover
+{
+  async removeGitMetadata(repositoryDirectory: string): Promise<void> {
+    await rm(join(repositoryDirectory, ".git"), { recursive: true, force: true });
+  }
+}
+
+export class LocalSkillsRepositoryDirectoryRemover
+  implements SkillsRepositoryDirectoryRemover
+{
+  async removeRepositoryDirectory(repositoryDirectory: string): Promise<void> {
+    await rm(repositoryDirectory, { recursive: true, force: true });
+  }
+}
+
+export interface SkillsRepositoriesServiceOptions {
+  readonly buildConfigReader?: SkillsRepositoryBuildConfigReader;
+  readonly repositoryCloner?: SkillsRepositoryCloner;
+  readonly gitMetadataRemover?: SkillsRepositoryGitMetadataRemover;
+  readonly repositoryDirectoryRemover?: SkillsRepositoryDirectoryRemover;
+}
+
 export class SkillsRepositoriesService {
   private readonly logger: Logger;
+  private readonly buildConfigReader: SkillsRepositoryBuildConfigReader;
+  private readonly repositoryCloner: SkillsRepositoryCloner;
+  private readonly gitMetadataRemover: SkillsRepositoryGitMetadataRemover;
+  private readonly repositoryDirectoryRemover: SkillsRepositoryDirectoryRemover;
 
   constructor(
     private readonly repositoryStore: SkillsRepositoryStore,
     logger: Logger,
+    options: SkillsRepositoriesServiceOptions = {},
   ) {
     this.logger = logger.child({ service: "skills-repositories" });
+    this.buildConfigReader =
+      options.buildConfigReader ?? new LocalSkillsRepositoryBuildConfigReader();
+    this.repositoryCloner = options.repositoryCloner ?? new GitSkillsRepositoryCloner();
+    this.gitMetadataRemover =
+      options.gitMetadataRemover ?? new LocalSkillsRepositoryGitMetadataRemover();
+    this.repositoryDirectoryRemover =
+      options.repositoryDirectoryRemover ?? new LocalSkillsRepositoryDirectoryRemover();
   }
 
   async listDownloadedRepositories(): Promise<readonly SkillsRepository[]> {
     this.logger.debug("listing downloaded skills repositories");
 
     return this.repositoryStore.listDownloadedRepositories();
+  }
+
+  async buildRepository(
+    options: BuildSkillsRepositoryOptions,
+  ): Promise<BuildSkillsRepositoryResult> {
+    this.logger.debug(
+      { repositoryDirectory: options.repositoryDirectory },
+      "building skills repository",
+    );
+
+    const config = await this.buildConfigReader.readBuildConfig(options.repositoryDirectory);
+    const repositories = config.skills.map((repository) => ({
+      repository,
+      directory: destinationDirectoryName(repository),
+    }));
+
+    for (const builtRepository of repositories) {
+      const destinationDirectory = join(
+        options.repositoryDirectory,
+        builtRepository.directory,
+      );
+      await this.repositoryDirectoryRemover.removeRepositoryDirectory(
+        destinationDirectory,
+      );
+      await this.repositoryCloner.cloneRepository(
+        builtRepository.repository,
+        destinationDirectory,
+      );
+      await this.gitMetadataRemover.removeGitMetadata(destinationDirectory);
+    }
+
+    return { repositories };
   }
 }
 
@@ -80,6 +207,58 @@ function compareRepositories(
   right: SkillsRepository,
 ): number {
   return `${left.owner}/${left.name}`.localeCompare(`${right.owner}/${right.name}`);
+}
+
+function parseSkills(config: unknown): readonly SkillsRepository[] {
+  if (!isRecord(config)) {
+    throw new Error("Expected skilled-repo.yml to contain an object.");
+  }
+
+  const skills = config.skills;
+  if (!Array.isArray(skills)) {
+    throw new Error("Expected skilled-repo.yml to contain a skills list.");
+  }
+
+  return skills.map(parseRepositoryReference);
+}
+
+function parseRepositoryReference(reference: unknown): SkillsRepository {
+  if (typeof reference !== "string") {
+    throw new Error("Expected each skill repository reference to be a string.");
+  }
+
+  const [owner, name, extra] = reference.split("/");
+  if (
+    owner === undefined ||
+    name === undefined ||
+    extra !== undefined ||
+    !isValidOwner(owner) ||
+    !isValidRepositoryName(name)
+  ) {
+    throw new Error(`Invalid skill repository reference: ${reference}`);
+  }
+
+  return { owner, name };
+}
+
+function destinationDirectoryName(repository: SkillsRepository): string {
+  return `${repository.owner}-${repository.name}`;
+}
+
+function repositoryUrl(repository: SkillsRepository): string {
+  return `https://github.com/${repository.owner}/${repository.name}`;
+}
+
+function isValidOwner(owner: string): boolean {
+  return /^[A-Za-z0-9-]+$/.test(owner);
+}
+
+function isValidRepositoryName(name: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(name);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
