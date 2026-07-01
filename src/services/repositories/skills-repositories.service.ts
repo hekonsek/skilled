@@ -39,6 +39,32 @@ export interface SkillsRepositoryDirectoryRemover {
 
 export interface BuildSkillsRepositoryOptions {
   readonly repositoryDirectory: string;
+  readonly listener?: SkillsRepositoryBuildListener;
+}
+
+export interface SkillsRepositoryBuildListener {
+  onBuildStarted?(event: SkillsRepositoryBuildStartedEvent): void;
+  onRepositoryBuildStarted?(event: SkillsRepositoryBuildRepositoryEvent): void;
+  onRepositoryDirectoryRemoved?(event: SkillsRepositoryBuildRepositoryEvent): void;
+  onRepositoryCloned?(event: SkillsRepositoryBuildRepositoryEvent): void;
+  onRepositoryGitMetadataRemoved?(event: SkillsRepositoryBuildRepositoryEvent): void;
+  onRepositoryBuildCompleted?(event: SkillsRepositoryBuildRepositoryEvent): void;
+  onBuildCompleted?(event: SkillsRepositoryBuildCompletedEvent): void;
+}
+
+export interface SkillsRepositoryBuildStartedEvent {
+  readonly repositoryDirectory: string;
+}
+
+export interface SkillsRepositoryBuildRepositoryEvent {
+  readonly repository: SkillsRepository;
+  readonly directory: string;
+  readonly destinationDirectory: string;
+}
+
+export interface SkillsRepositoryBuildCompletedEvent {
+  readonly repositoryDirectory: string;
+  readonly repositories: readonly BuiltSkillsRepository[];
 }
 
 export interface BuiltSkillsRepository {
@@ -160,6 +186,10 @@ export class SkillsRepositoriesService {
       "building skills repository",
     );
 
+    options.listener?.onBuildStarted?.({
+      repositoryDirectory: options.repositoryDirectory,
+    });
+
     const config = await this.buildConfigReader.readBuildConfig(options.repositoryDirectory);
     const repositories = config.skills.map((repository) => ({
       repository,
@@ -171,15 +201,30 @@ export class SkillsRepositoriesService {
         options.repositoryDirectory,
         builtRepository.directory,
       );
+      const event = {
+        ...builtRepository,
+        destinationDirectory,
+      };
+
+      options.listener?.onRepositoryBuildStarted?.(event);
       await this.repositoryDirectoryRemover.removeRepositoryDirectory(
         destinationDirectory,
       );
+      options.listener?.onRepositoryDirectoryRemoved?.(event);
       await this.repositoryCloner.cloneRepository(
         builtRepository.repository,
         destinationDirectory,
       );
+      options.listener?.onRepositoryCloned?.(event);
       await this.gitMetadataRemover.removeGitMetadata(destinationDirectory);
+      options.listener?.onRepositoryGitMetadataRemoved?.(event);
+      options.listener?.onRepositoryBuildCompleted?.(event);
     }
+
+    options.listener?.onBuildCompleted?.({
+      repositoryDirectory: options.repositoryDirectory,
+      repositories,
+    });
 
     return { repositories };
   }

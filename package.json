@@ -20,6 +20,7 @@
   "dependencies": {
     "chalk": "^5.4.1",
     "commander": "^14.0.0",
+    "ora": "^9.4.1",
     "pino": "^9.7.0",
     "yaml": "^2.9.0"
   },

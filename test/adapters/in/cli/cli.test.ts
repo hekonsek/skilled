@@ -42,12 +42,13 @@ describe("createCli", () => {
 
   it("builds a skills repository from the configured directory", async () => {
     const stdout = new MemoryWritable();
-    const cloner = new RecordingSkillsRepositoryCloner();
+    const stderr = new MemoryWritable();
+    const cloner = new RecordingSkillsRepositoryCloner(() => stdout.toString());
 
     await createCli({
       version: "1.2.3",
       stdout,
-      stderr: new MemoryWritable(),
+      stderr,
       repositoryStore: new StaticSkillsRepositoryStore([]),
       buildConfigReader: new StaticSkillsRepositoryBuildConfigReader({
         skills: [
@@ -60,7 +61,23 @@ describe("createCli", () => {
 
     assert.equal(
       stdout.toString(),
-      "📦 myorg/skills -> myorg-skills\n📦 myuser/myskills -> myuser-myskills\n",
+      "📦 myorg/skills\n📦 myuser/myskills\n",
+    );
+    assert.equal(
+      stderr.toString(),
+      [
+        "• Building skills repository in /workspace/skills",
+        "• Preparing myorg/skills",
+        "• Cloned myorg/skills",
+        "• Stripped Git metadata from myorg-skills",
+        "✓ Built myorg/skills",
+        "• Preparing myuser/myskills",
+        "• Cloned myuser/myskills",
+        "• Stripped Git metadata from myuser-myskills",
+        "✓ Built myuser/myskills",
+        "✓ Built 2 skills repositories.",
+        "",
+      ].join("\n"),
     );
     assert.deepEqual(cloner.cloneRequests, [
       {
@@ -71,6 +88,10 @@ describe("createCli", () => {
         repository: { owner: "myuser", name: "myskills" },
         destinationDirectory: "/workspace/skills/myuser-myskills",
       },
+    ]);
+    assert.deepEqual(cloner.stdoutSnapshots, [
+      "",
+      "📦 myorg/skills\n",
     ]);
   });
 
@@ -112,11 +133,15 @@ class RecordingSkillsRepositoryCloner implements SkillsRepositoryCloner {
     readonly repository: SkillsRepository;
     readonly destinationDirectory: string;
   }[] = [];
+  readonly stdoutSnapshots: string[] = [];
+
+  constructor(private readonly readStdout: () => string = () => "") {}
 
   async cloneRepository(
     repository: SkillsRepository,
     destinationDirectory: string,
   ): Promise<void> {
+    this.stdoutSnapshots.push(this.readStdout());
     this.cloneRequests.push({ repository, destinationDirectory });
   }
 }

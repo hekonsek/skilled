@@ -1,8 +1,10 @@
 import process from "node:process";
 import chalk from "chalk";
 import { Command, Option } from "commander";
+import ora, { type Ora } from "ora";
 import pino, { type LevelWithSilent } from "pino";
 import {
+  type SkillsRepositoryBuildListener,
   type SkillsRepositoryBuildConfigReader,
   type SkillsRepositoryCloner,
   LocalSkillsRepositoryStore,
@@ -104,25 +106,140 @@ export function createCli(options: CreateCliOptions): Command {
           repositoryCloner: options.repositoryCloner,
         },
       );
-      const result = await service.buildRepository({
+      const buildProgress = createBuildProgressRenderer(stdout, stderr);
+      await service.buildRepository({
         repositoryDirectory:
           buildOptions.dir ?? options.currentDirectory ?? process.cwd(),
+        listener: buildProgress.listener,
       });
-
-      for (const builtRepository of result.repositories) {
-        stdout.write(
-          `${repositoryMarker(stdout)} ${builtRepository.repository.owner}/${builtRepository.repository.name} -> ${builtRepository.directory}\n`,
-        );
-      }
     });
 
   return program;
+}
+
+interface BuildProgressRenderer {
+  readonly listener: SkillsRepositoryBuildListener;
+}
+
+function createBuildProgressRenderer(
+  stdout: NodeJS.WritableStream,
+  stderr: NodeJS.WritableStream,
+): BuildProgressRenderer {
+  if (shouldUseSpinner(stderr)) {
+    return createSpinnerBuildProgressRenderer(stdout, stderr);
+  }
+
+  return createLineBuildProgressRenderer(stdout, stderr);
+}
+
+function createSpinnerBuildProgressRenderer(
+  stdout: NodeJS.WritableStream,
+  stderr: NodeJS.WritableStream,
+): BuildProgressRenderer {
+  let spinner: Ora | undefined;
+
+  return {
+    listener: {
+      onBuildStarted(event) {
+        spinner = ora({
+          stream: stderr,
+          text: `Building skills repository in ${event.repositoryDirectory}`,
+        }).start();
+      },
+      onRepositoryBuildStarted(event) {
+        updateSpinner(spinner, `Preparing ${repositoryReference(event.repository)}`);
+      },
+      onRepositoryCloned(event) {
+        stdout.write(
+          `${repositoryMarker(stdout)} ${repositoryReference(event.repository)}\n`,
+        );
+        updateSpinner(spinner, `Cloned ${repositoryReference(event.repository)}`);
+      },
+      onRepositoryGitMetadataRemoved(event) {
+        updateSpinner(spinner, `Stripped Git metadata from ${event.directory}`);
+      },
+      onRepositoryBuildCompleted(event) {
+        updateSpinner(spinner, `Built ${repositoryReference(event.repository)}`);
+      },
+      onBuildCompleted(event) {
+        spinner?.succeed(`Built ${event.repositories.length} skills repositories.`);
+      },
+    },
+  };
+}
+
+function createLineBuildProgressRenderer(
+  stdout: NodeJS.WritableStream,
+  stderr: NodeJS.WritableStream,
+): BuildProgressRenderer {
+  return {
+    listener: {
+      onBuildStarted(event) {
+        stderr.write(
+          `${progressMarker(stderr)} Building skills repository in ${event.repositoryDirectory}\n`,
+        );
+      },
+      onRepositoryBuildStarted(event) {
+        stderr.write(
+          `${progressMarker(stderr)} Preparing ${repositoryReference(event.repository)}\n`,
+        );
+      },
+      onRepositoryCloned(event) {
+        stdout.write(
+          `${repositoryMarker(stdout)} ${repositoryReference(event.repository)}\n`,
+        );
+        stderr.write(
+          `${progressMarker(stderr)} Cloned ${repositoryReference(event.repository)}\n`,
+        );
+      },
+      onRepositoryGitMetadataRemoved(event) {
+        stderr.write(
+          `${progressMarker(stderr)} Stripped Git metadata from ${event.directory}\n`,
+        );
+      },
+      onRepositoryBuildCompleted(event) {
+        stderr.write(
+          `${successMarker(stderr)} Built ${repositoryReference(event.repository)}\n`,
+        );
+      },
+      onBuildCompleted(event) {
+        stderr.write(
+          `${successMarker(stderr)} Built ${event.repositories.length} skills repositories.\n`,
+        );
+      },
+    },
+  };
+}
+
+function updateSpinner(spinner: Ora | undefined, text: string): void {
+  if (spinner !== undefined) {
+    spinner.text = text;
+  }
 }
 
 function repositoryMarker(stdout: NodeJS.WritableStream): string {
   return isInteractiveOutput(stdout) ? chalk.green("📦") : "📦";
 }
 
-function isInteractiveOutput(stdout: NodeJS.WritableStream): boolean {
-  return "isTTY" in stdout && stdout.isTTY === true;
+function progressMarker(stderr: NodeJS.WritableStream): string {
+  return isInteractiveOutput(stderr) ? chalk.cyan("•") : "•";
+}
+
+function successMarker(stderr: NodeJS.WritableStream): string {
+  return isInteractiveOutput(stderr) ? chalk.green("✓") : "✓";
+}
+
+function repositoryReference(repository: {
+  readonly owner: string;
+  readonly name: string;
+}): string {
+  return `${repository.owner}/${repository.name}`;
+}
+
+function isInteractiveOutput(stream: NodeJS.WritableStream): boolean {
+  return "isTTY" in stream && stream.isTTY === true;
+}
+
+function shouldUseSpinner(stderr: NodeJS.WritableStream): boolean {
+  return isInteractiveOutput(stderr) && process.env.CI === undefined;
 }

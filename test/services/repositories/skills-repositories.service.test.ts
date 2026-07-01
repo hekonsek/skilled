@@ -114,6 +114,7 @@ describe("SkillsRepositoriesService", () => {
   it("clones configured repositories into build output directories", async () => {
     const root = await createTemporaryDirectory();
     const operations: string[] = [];
+    const events: string[] = [];
     const repositoryDirectoryRemover = new RecordingSkillsRepositoryDirectoryRemover(
       operations,
     );
@@ -141,12 +142,46 @@ describe("SkillsRepositoriesService", () => {
       },
     );
 
-    assert.deepEqual(await service.buildRepository({ repositoryDirectory: root }), {
-      repositories: [
-        { repository: { owner: "myorg", name: "skills" }, directory: "myorg-skills" },
-        { repository: { owner: "myuser", name: "myskills" }, directory: "myuser-myskills" },
-      ],
-    });
+    assert.deepEqual(
+      await service.buildRepository({
+        repositoryDirectory: root,
+        listener: {
+          onBuildStarted(event) {
+            events.push(`build-started ${event.repositoryDirectory}`);
+          },
+          onRepositoryBuildStarted(event) {
+            events.push(`repo-started ${event.repository.owner}/${event.repository.name}`);
+          },
+          onRepositoryDirectoryRemoved(event) {
+            events.push(`repo-removed ${event.directory}`);
+          },
+          onRepositoryCloned(event) {
+            events.push(`repo-cloned ${event.directory}`);
+          },
+          onRepositoryGitMetadataRemoved(event) {
+            events.push(`repo-stripped ${event.directory}`);
+          },
+          onRepositoryBuildCompleted(event) {
+            events.push(`repo-completed ${event.repository.owner}/${event.repository.name}`);
+          },
+          onBuildCompleted(event) {
+            events.push(`build-completed ${event.repositories.length}`);
+          },
+        },
+      }),
+      {
+        repositories: [
+          {
+            repository: { owner: "myorg", name: "skills" },
+            directory: "myorg-skills",
+          },
+          {
+            repository: { owner: "myuser", name: "myskills" },
+            directory: "myuser-myskills",
+          },
+        ],
+      },
+    );
     assert.deepEqual(cloner.cloneRequests, [
       {
         repository: { owner: "myorg", name: "skills" },
@@ -172,6 +207,20 @@ describe("SkillsRepositoriesService", () => {
       `remove ${join(root, "myuser-myskills")}`,
       `clone myuser/myskills ${join(root, "myuser-myskills")}`,
       `strip-git ${join(root, "myuser-myskills")}`,
+    ]);
+    assert.deepEqual(events, [
+      `build-started ${root}`,
+      "repo-started myorg/skills",
+      "repo-removed myorg-skills",
+      "repo-cloned myorg-skills",
+      "repo-stripped myorg-skills",
+      "repo-completed myorg/skills",
+      "repo-started myuser/myskills",
+      "repo-removed myuser-myskills",
+      "repo-cloned myuser-myskills",
+      "repo-stripped myuser-myskills",
+      "repo-completed myuser/myskills",
+      "build-completed 2",
     ]);
   });
 });
