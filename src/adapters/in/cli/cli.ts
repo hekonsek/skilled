@@ -47,6 +47,7 @@ interface GlobalOptions {
 
 interface BuildCommandOptions {
   readonly dir?: string;
+  readonly installedRepo?: string;
 }
 
 export function createCli(options: CreateCliOptions): Command {
@@ -126,7 +127,17 @@ export function createCli(options: CreateCliOptions): Command {
   repo
     .command("build")
     .description("Build the skills repository in the current directory.")
-    .option("--dir <directory>", "root directory of the skills monorepo")
+    .addOption(
+      new Option("--dir <directory>", "root directory of the skills monorepo").conflicts(
+        "installedRepo",
+      ),
+    )
+    .addOption(
+      new Option(
+        "--installed-repo <repository>",
+        "locally installed repository in owner/name format",
+      ).conflicts("dir"),
+    )
     .action(async (buildOptions: BuildCommandOptions) => {
       const globalOptions = program.opts<GlobalOptions>();
       const logger = pino(
@@ -138,17 +149,25 @@ export function createCli(options: CreateCliOptions): Command {
         options.repositoryStore ?? new LocalSkillsRepositoryStore(),
         logger,
         {
+          reposDirectory: options.reposDirectory,
           buildConfigReader: options.buildConfigReader,
           repositoryCloner: options.repositoryCloner,
           repositoryDirectoryRemover: options.repositoryDirectoryRemover,
         },
       );
       const buildProgress = createBuildProgressRenderer(stdout, stderr);
-      await service.buildRepository({
-        repositoryDirectory:
-          buildOptions.dir ?? options.currentDirectory ?? process.cwd(),
-        listener: buildProgress.listener,
-      });
+      if (buildOptions.installedRepo !== undefined) {
+        await service.buildInstalledRepository({
+          repositoryReference: buildOptions.installedRepo,
+          listener: buildProgress.listener,
+        });
+      } else {
+        await service.buildRepository({
+          repositoryDirectory:
+            buildOptions.dir ?? options.currentDirectory ?? process.cwd(),
+          listener: buildProgress.listener,
+        });
+      }
     });
 
   return program;

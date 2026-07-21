@@ -367,6 +367,54 @@ describe("SkillsRepositoriesService", () => {
       "build-completed 2",
     ]);
   });
+
+  it("builds an installed repository from its local repository directory", async () => {
+    const configDirectories: string[] = [];
+    const cloner = new RecordingSkillsRepositoryCloner();
+    const service = new SkillsRepositoriesService(
+      new StaticSkillsRepositoryStore([]),
+      pino({ level: "silent" }),
+      {
+        reposDirectory: "/home/test/.skilled/repos",
+        buildConfigReader: {
+          async readBuildConfig(repositoryDirectory) {
+            configDirectories.push(repositoryDirectory);
+
+            return { skills: [{ owner: "myorg", name: "skills" }] };
+          },
+        },
+        repositoryCloner: cloner,
+      },
+    );
+
+    await service.buildInstalledRepository({
+      repositoryReference: "hekonsek/skilled-repo",
+    });
+
+    assert.deepEqual(configDirectories, [
+      "/home/test/.skilled/repos/hekonsek/skilled-repo",
+    ]);
+    assert.deepEqual(cloner.cloneRequests, [
+      {
+        repository: { owner: "myorg", name: "skills" },
+        destinationDirectory:
+          "/home/test/.skilled/repos/hekonsek/skilled-repo/myorg-skills",
+      },
+    ]);
+  });
+
+  it("rejects an invalid installed repository reference before building", async () => {
+    const service = new SkillsRepositoriesService(
+      new StaticSkillsRepositoryStore([]),
+      pino({ level: "silent" }),
+      { reposDirectory: "/home/test/.skilled/repos" },
+    );
+
+    await assert.rejects(
+      service.buildInstalledRepository({ repositoryReference: "invalid" }),
+      /Invalid skill repository reference: invalid/,
+    );
+  });
 });
 
 class StaticSkillsRepositoryStore implements SkillsRepositoryStore {

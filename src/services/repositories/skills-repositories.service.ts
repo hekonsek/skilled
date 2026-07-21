@@ -72,6 +72,11 @@ export interface BuildSkillsRepositoryOptions {
   readonly listener?: SkillsRepositoryBuildListener;
 }
 
+export interface BuildInstalledSkillsRepositoryOptions {
+  readonly repositoryReference: string;
+  readonly listener?: SkillsRepositoryBuildListener;
+}
+
 export interface SkillsRepositoryBuildListener {
   onBuildStarted?(event: SkillsRepositoryBuildStartedEvent): void;
   onRepositoryBuildStarted?(event: SkillsRepositoryBuildRepositoryEvent): void;
@@ -334,6 +339,21 @@ export class SkillsRepositoriesService {
     });
 
     return { repositories };
+  }
+
+  async buildInstalledRepository(
+    options: BuildInstalledSkillsRepositoryOptions,
+  ): Promise<BuildSkillsRepositoryResult> {
+    const repository = parseRepositoryReference(options.repositoryReference);
+
+    return this.buildRepository({
+      repositoryDirectory: join(
+        this.reposDirectory,
+        repository.owner,
+        repository.name,
+      ),
+      listener: options.listener,
+    });
   }
 }
 

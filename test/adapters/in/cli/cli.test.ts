@@ -193,7 +193,75 @@ describe("createCli", () => {
     ]);
   });
 
-  it("lists the build directory option in help output", async () => {
+  it("builds a locally installed skills repository", async () => {
+    const stdout = new MemoryWritable();
+    const stderr = new MemoryWritable();
+    const cloner = new RecordingSkillsRepositoryCloner();
+
+    await createCli({
+      version: "1.2.3",
+      stdout,
+      stderr,
+      repositoryStore: new StaticSkillsRepositoryStore([]),
+      buildConfigReader: new StaticSkillsRepositoryBuildConfigReader({
+        skills: [{ owner: "myorg", name: "skills" }],
+      }),
+      repositoryCloner: cloner,
+      reposDirectory: "/home/test/.skilled/repos",
+    }).parseAsync([
+      "node",
+      "skilled",
+      "repo",
+      "build",
+      "--installed-repo",
+      "hekonsek/skilled-repo",
+    ]);
+
+    assert.match(
+      stderr.toString(),
+      /Building skills repository in \/home\/test\/\.skilled\/repos\/hekonsek\/skilled-repo/,
+    );
+    assert.deepEqual(cloner.cloneRequests, [
+      {
+        repository: { owner: "myorg", name: "skills" },
+        destinationDirectory:
+          "/home/test/.skilled/repos/hekonsek/skilled-repo/myorg-skills",
+      },
+    ]);
+  });
+
+  it("rejects using build directory and installed repository together", async () => {
+    const program = createCli({
+      version: "1.2.3",
+      stdout: new MemoryWritable(),
+      stderr: new MemoryWritable(),
+    });
+    const repoCommand = program.commands.find((command) => command.name() === "repo");
+    const buildCommand = repoCommand?.commands.find(
+      (command) => command.name() === "build",
+    );
+    buildCommand?.exitOverride();
+    buildCommand?.configureOutput({ writeErr() {} });
+
+    await assert.rejects(
+      program.parseAsync([
+        "node",
+        "skilled",
+        "repo",
+        "build",
+        "--dir",
+        "/workspace/skills",
+        "--installed-repo",
+        "hekonsek/skilled-repo",
+      ]),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "commander.conflictingOption",
+    );
+  });
+
+  it("lists the build options in help output", async () => {
     const program = createCli({
       version: "1.2.3",
       stdout: new MemoryWritable(),
@@ -205,6 +273,10 @@ describe("createCli", () => {
     );
 
     assert.match(buildCommand?.helpInformation() ?? "", /--dir <directory>/);
+    assert.match(
+      buildCommand?.helpInformation() ?? "",
+      /--installed-repo <repository>/,
+    );
   });
 });
 
