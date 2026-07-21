@@ -1,22 +1,44 @@
-# Skills repository building
+# Skills Repository Building
 
-`skilled` can be used to build skills repository from configuration file. The file is named `skilled-repo.yml` and has the following structure:
+`skilled` can build a skills repository from a configuration file named
+`skilled-repo.yml`. The file has the following structure:
 
 ```yml
 skills:
-    - org1/repo1
-    - org1/repo2
-    - user/repo
+  - org1/repo1
+  - org1/repo2
+  - user/repo
 ```
 
-Repository configuration file is located in root of built skills repository monorepo. Configuration file is ignored by agents, but can be used to build final skills repository monorepo. 
+The configuration file is located in the root of the skills repository
+monorepo. Agents ignore the configuration file, while `skilled` uses it to
+compose the monorepo from Git submodules.
 
-## Building behavior
+## Building Behavior
 
-When `skilled repo build` command is executed in root of monorepo, `skilled` clones repositories and puts them into an appriopriate directories. 
+The directory passed to `skilled repo build`, or the current directory when no
+directory is passed, must be a Git working tree.
 
-Repositories are saved in root of skills monorepo using `{USER|ORGANIZATION}-{REPO}` convention. For example for `myorg/skills` skill in build config, `https://github.com/myorg/skills` repository will be downloaded and saved into `myorg-skills` directory in monorepo.
+For each repository in `skilled-repo.yml`, `skilled` maintains a Git submodule
+in the root of the monorepo. Submodule directories use the
+`{USER|ORGANIZATION}-{REPO}` convention. For example, `myorg/skills` is placed
+in `myorg-skills` and uses `https://github.com/myorg/skills` as its remote.
 
-Downloaded skills should be stripped from `.git` directory. Skills monorepo should contain flat view of compiled skills without Git history of original repository.
+If a configured submodule does not exist, the command adds it and downloads its
+contents. If it already exists, the command synchronizes its configured remote,
+fetches the remote, and updates the local submodule working tree to the latest
+commit on the remote's default branch.
 
-If directory for downloaded repository already exists, remove existing one and download the latest version.
+Updating an existing submodule changes the submodule commit recorded by the
+parent repository locally. The command does not commit this change. Users can
+review and commit the updated submodule references in the parent repository.
+
+The command must not overwrite uncommitted changes inside a submodule. If a
+configured submodule contains uncommitted changes, the build fails and reports
+the affected submodule.
+
+Git metadata in submodules is retained. The built monorepo therefore consists
+of Git submodules rather than copied repository contents, and its `.gitmodules`
+file and submodule commit references are part of the repository state.
+
+Repositories removed from `skilled-repo.yml` are removed automatically.

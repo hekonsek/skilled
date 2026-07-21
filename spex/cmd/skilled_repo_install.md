@@ -1,8 +1,9 @@
 # skilled repo install
 
-Downloads skills repo into local device.
+Downloads a skills repository and its Git submodule contents onto the local
+device.
 
-## Example command
+## Example Command
 
 ```bash
 # Clone https://github.com/hekonsek/skilled-repo into ~/.skilled/repos/hekonsek/skilled-repo
@@ -11,8 +12,19 @@ skilled repo install hekonsek/skilled-repo
 
 ## Behavior
 
-Clones the remote skills repository onto the local device. If the repository is already
-installed, runs `git pull --ff-only` in the existing checkout so Git downloads and
-fast-forwards only the missing changes.
+If the repository is not installed, the command clones the remote repository
+into `~/.skilled/repos/<owner>/<name>` and recursively initializes and downloads
+all of its submodules.
 
-If there are uncommited changes in local repo, remove local repo and create fresh clone.
+If the repository is already installed and has no uncommitted changes, the
+command runs a fast-forward-only pull in the parent checkout, synchronizes the
+submodule configuration, and recursively initializes and updates every
+submodule to the commit recorded by the updated parent repository.
+
+Installation follows the submodule commits recorded by the parent repository;
+it does not advance submodules independently to newer upstream commits. Use
+`skilled repo build` when the installed repository's configured submodules
+should be advanced to their latest upstream commits.
+
+If the parent repository or any submodule contains uncommitted changes, the
+command removes the installed checkout and creates a fresh recursive clone.

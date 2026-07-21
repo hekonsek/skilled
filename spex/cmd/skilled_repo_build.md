@@ -1,9 +1,17 @@
 # skilled repo build
 
-Builds skills repository in current directory according to the [skills repository building specification](../03-skills-repository-building.md).
+Builds a skills repository in the current directory.
+
+## Behavior 
+
+The command adds missing configured Git submodules and updates existing ones to
+the latest commit on each remote's default branch. Updated submodule references
+remain as local changes in the parent repository for the user to review and
+commit.
 
 ## Options
 
-`--dir`: Indicates root directory of skills monorepo containing configuration file.
-
-- `--installed-repo=hekonsek/skilled-repo`. Rebuilds locally installed repository (for example `https://github.com/hekonsek/skilled-repo`). Cannot be used with `--dir` option.
+- `--dir <directory>`: Uses the specified skills repository root containing
+  `skilled-repo.yml` instead of the current directory.
+- `--installed-repo <owner>/<name>`: Builds a locally installed repository, for
+  example `hekonsek/skilled-repo`. This option cannot be used with `--dir`.
