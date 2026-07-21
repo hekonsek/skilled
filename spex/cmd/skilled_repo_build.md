@@ -5,3 +5,5 @@ Builds skills repository in current directory according to the [skills repositor
 ## Options
 
 `--dir`: Indicates root directory of skills monorepo containing configuration file.
+
+- `--installed-repo=hekonsek/skilled-repo`. Rebuilds locally installed repository (for example `https://github.com/hekonsek/skilled-repo`). Cannot be used with `--dir` option.
