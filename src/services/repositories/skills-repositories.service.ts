@@ -1,7 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { mkdir, readFile, readdir, rm, symlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { Logger } from "pino";
 import { parse } from "yaml";
@@ -37,6 +37,35 @@ export interface SkillsRepositoryChangesChecker {
   hasUncommittedChanges(repositoryDirectory: string): Promise<boolean>;
 }
 
+export interface SkillsRepositorySubmodule {
+  readonly name: string;
+  readonly directory: string;
+}
+
+export interface SkillsRepositorySubmoduleManager {
+  listSubmodules(
+    repositoryDirectory: string,
+  ): Promise<readonly SkillsRepositorySubmodule[]>;
+  hasUncommittedChanges(
+    repositoryDirectory: string,
+    submodule: SkillsRepositorySubmodule,
+  ): Promise<boolean>;
+  addSubmodule(
+    repositoryDirectory: string,
+    repository: SkillsRepository,
+    submoduleDirectory: string,
+  ): Promise<void>;
+  updateSubmodule(
+    repositoryDirectory: string,
+    repository: SkillsRepository,
+    submodule: SkillsRepositorySubmodule,
+  ): Promise<void>;
+  removeSubmodule(
+    repositoryDirectory: string,
+    submodule: SkillsRepositorySubmodule,
+  ): Promise<void>;
+}
+
 export interface InstallSkillsRepositoryOptions {
   readonly repositoryReference: string;
   readonly listener?: SkillsRepositoryInstallListener;
@@ -57,10 +86,6 @@ export interface InstallSkillsRepositoryResult {
   readonly repository: SkillsRepository;
   readonly destinationDirectory: string;
   readonly operation: "install" | "update";
-}
-
-export interface SkillsRepositoryGitMetadataRemover {
-  removeGitMetadata(repositoryDirectory: string): Promise<void>;
 }
 
 export interface SkillsRepositoryDirectoryRemover {
@@ -97,10 +122,11 @@ export interface BuildInstalledSkillsRepositoryOptions {
 export interface SkillsRepositoryBuildListener {
   onBuildStarted?(event: SkillsRepositoryBuildStartedEvent): void;
   onRepositoryBuildStarted?(event: SkillsRepositoryBuildRepositoryEvent): void;
-  onRepositoryDirectoryRemoved?(event: SkillsRepositoryBuildRepositoryEvent): void;
-  onRepositoryCloned?(event: SkillsRepositoryBuildRepositoryEvent): void;
-  onRepositoryGitMetadataRemoved?(event: SkillsRepositoryBuildRepositoryEvent): void;
+  onRepositorySubmoduleAdded?(event: SkillsRepositoryBuildRepositoryEvent): void;
+  onRepositorySubmoduleUpdated?(event: SkillsRepositoryBuildRepositoryEvent): void;
   onRepositoryBuildCompleted?(event: SkillsRepositoryBuildRepositoryEvent): void;
+  onSubmoduleRemovalStarted?(event: SkillsRepositoryBuildSubmoduleRemovalEvent): void;
+  onSubmoduleRemoved?(event: SkillsRepositoryBuildSubmoduleRemovalEvent): void;
   onBuildCompleted?(event: SkillsRepositoryBuildCompletedEvent): void;
 }
 
@@ -110,6 +136,12 @@ export interface SkillsRepositoryBuildStartedEvent {
 
 export interface SkillsRepositoryBuildRepositoryEvent {
   readonly repository: SkillsRepository;
+  readonly directory: string;
+  readonly destinationDirectory: string;
+  readonly operation: "add" | "update";
+}
+
+export interface SkillsRepositoryBuildSubmoduleRemovalEvent {
   readonly directory: string;
   readonly destinationDirectory: string;
 }
@@ -171,18 +203,48 @@ export class LocalSkillsRepositoryBuildConfigReader
 }
 
 export class GitSkillsRepositoryCloner implements SkillsRepositoryCloner {
+  private readonly resolveRepositoryUrl: (repository: SkillsRepository) => string;
+
+  constructor(
+    options: {
+      readonly resolveRepositoryUrl?: (repository: SkillsRepository) => string;
+    } = {},
+  ) {
+    this.resolveRepositoryUrl = options.resolveRepositoryUrl ?? repositoryUrl;
+  }
+
   async cloneRepository(
     repository: SkillsRepository,
     destinationDirectory: string,
   ): Promise<void> {
     await mkdir(dirname(destinationDirectory), { recursive: true });
-    await execFile("git", ["clone", repositoryUrl(repository), destinationDirectory]);
+    await execFile("git", [
+      "clone",
+      "--recurse-submodules",
+      this.resolveRepositoryUrl(repository),
+      destinationDirectory,
+    ]);
   }
 }
 
 export class GitSkillsRepositoryUpdater implements SkillsRepositoryUpdater {
   async updateRepository(repositoryDirectory: string): Promise<void> {
     await execFile("git", ["-C", repositoryDirectory, "pull", "--ff-only"]);
+    await execFile("git", [
+      "-C",
+      repositoryDirectory,
+      "submodule",
+      "sync",
+      "--recursive",
+    ]);
+    await execFile("git", [
+      "-C",
+      repositoryDirectory,
+      "submodule",
+      "update",
+      "--init",
+      "--recursive",
+    ]);
   }
 }
 
@@ -201,11 +263,225 @@ export class GitSkillsRepositoryChangesChecker
   }
 }
 
-export class LocalSkillsRepositoryGitMetadataRemover
-  implements SkillsRepositoryGitMetadataRemover
+export class GitSkillsRepositorySubmoduleManager
+  implements SkillsRepositorySubmoduleManager
 {
-  async removeGitMetadata(repositoryDirectory: string): Promise<void> {
-    await rm(join(repositoryDirectory, ".git"), { recursive: true, force: true });
+  private readonly resolveRepositoryUrl: (repository: SkillsRepository) => string;
+
+  constructor(
+    options: {
+      readonly resolveRepositoryUrl?: (repository: SkillsRepository) => string;
+    } = {},
+  ) {
+    this.resolveRepositoryUrl = options.resolveRepositoryUrl ?? repositoryUrl;
+  }
+
+  async listSubmodules(
+    repositoryDirectory: string,
+  ): Promise<readonly SkillsRepositorySubmodule[]> {
+    let isWorkingTree: string;
+    try {
+      ({ stdout: isWorkingTree } = await execFile("git", [
+        "-C",
+        repositoryDirectory,
+        "rev-parse",
+        "--is-inside-work-tree",
+      ]));
+    } catch (error) {
+      throw new Error(`Not a Git working tree: ${repositoryDirectory}`, {
+        cause: error,
+      });
+    }
+    if (isWorkingTree.trim() !== "true") {
+      throw new Error(`Not a Git working tree: ${repositoryDirectory}`);
+    }
+
+    try {
+      const { stdout } = await execFile("git", [
+        "-C",
+        repositoryDirectory,
+        "config",
+        "--file",
+        ".gitmodules",
+        "--get-regexp",
+        "^submodule\\..*\\.path$",
+      ]);
+
+      const submodules = stdout
+        .trim()
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map(parseSubmoduleConfigLine);
+      for (const submodule of submodules) {
+        resolvePathWithin(
+          repositoryDirectory,
+          submodule.directory,
+          "Git submodule directory",
+        );
+      }
+
+      return submodules;
+    } catch (error) {
+      if (isProcessExitError(error, 1)) {
+        return [];
+      }
+
+      throw error;
+    }
+  }
+
+  async hasUncommittedChanges(
+    repositoryDirectory: string,
+    submodule: SkillsRepositorySubmodule,
+  ): Promise<boolean> {
+    const { stdout } = await execFile("git", [
+      "-C",
+      repositoryDirectory,
+      "submodule",
+      "status",
+      "--",
+      submodule.directory,
+    ]);
+    if (stdout.startsWith("-")) {
+      return false;
+    }
+
+    const { stdout: status } = await execFile("git", [
+      "-C",
+      resolvePathWithin(
+        repositoryDirectory,
+        submodule.directory,
+        "Git submodule directory",
+      ),
+      "status",
+      "--porcelain",
+    ]);
+
+    return status.length > 0;
+  }
+
+  async addSubmodule(
+    repositoryDirectory: string,
+    repository: SkillsRepository,
+    submoduleDirectory: string,
+  ): Promise<void> {
+    resolvePathWithin(
+      repositoryDirectory,
+      submoduleDirectory,
+      "Git submodule directory",
+    );
+    await execFile("git", [
+      "-C",
+      repositoryDirectory,
+      "submodule",
+      "add",
+      this.resolveRepositoryUrl(repository),
+      submoduleDirectory,
+    ]);
+  }
+
+  async updateSubmodule(
+    repositoryDirectory: string,
+    repository: SkillsRepository,
+    submodule: SkillsRepositorySubmodule,
+  ): Promise<void> {
+    await execFile("git", [
+      "-C",
+      repositoryDirectory,
+      "config",
+      "--file",
+      ".gitmodules",
+      `submodule.${submodule.name}.url`,
+      this.resolveRepositoryUrl(repository),
+    ]);
+    await execFile("git", [
+      "-C",
+      repositoryDirectory,
+      "submodule",
+      "sync",
+      "--",
+      submodule.directory,
+    ]);
+    await execFile("git", [
+      "-C",
+      repositoryDirectory,
+      "submodule",
+      "update",
+      "--init",
+      "--",
+      submodule.directory,
+    ]);
+
+    const submoduleWorkingTree = resolvePathWithin(
+      repositoryDirectory,
+      submodule.directory,
+      "Git submodule directory",
+    );
+    await execFile("git", ["-C", submoduleWorkingTree, "fetch", "origin"]);
+    await execFile("git", [
+      "-C",
+      submoduleWorkingTree,
+      "remote",
+      "set-head",
+      "origin",
+      "--auto",
+    ]);
+    const { stdout: remoteHead } = await execFile("git", [
+      "-C",
+      submoduleWorkingTree,
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+    ]);
+    await execFile("git", [
+      "-C",
+      submoduleWorkingTree,
+      "checkout",
+      "--detach",
+      remoteHead.trim(),
+    ]);
+  }
+
+  async removeSubmodule(
+    repositoryDirectory: string,
+    submodule: SkillsRepositorySubmodule,
+  ): Promise<void> {
+    resolvePathWithin(
+      repositoryDirectory,
+      submodule.directory,
+      "Git submodule directory",
+    );
+    const { stdout: gitDirectoryOutput } = await execFile("git", [
+      "-C",
+      repositoryDirectory,
+      "rev-parse",
+      "--absolute-git-dir",
+    ]);
+    const modulesDirectory = resolve(gitDirectoryOutput.trim(), "modules");
+    const submoduleGitDirectory = resolvePathWithin(
+      modulesDirectory,
+      submodule.name,
+      "Git submodule name",
+    );
+
+    await execFile("git", [
+      "-C",
+      repositoryDirectory,
+      "submodule",
+      "deinit",
+      "--force",
+      "--",
+      submodule.directory,
+    ]);
+    await execFile("git", [
+      "-C",
+      repositoryDirectory,
+      "rm",
+      "--force",
+      "--",
+      submodule.directory,
+    ]);
+
+    await rm(submoduleGitDirectory, { recursive: true, force: true });
   }
 }
 
@@ -237,7 +513,7 @@ export interface SkillsRepositoriesServiceOptions {
   readonly repositoryCloner?: SkillsRepositoryCloner;
   readonly repositoryUpdater?: SkillsRepositoryUpdater;
   readonly repositoryChangesChecker?: SkillsRepositoryChangesChecker;
-  readonly gitMetadataRemover?: SkillsRepositoryGitMetadataRemover;
+  readonly submoduleManager?: SkillsRepositorySubmoduleManager;
   readonly repositoryDirectoryRemover?: SkillsRepositoryDirectoryRemover;
   readonly repositoryActivator?: SkillsRepositoryActivator;
 }
@@ -250,7 +526,7 @@ export class SkillsRepositoriesService {
   private readonly repositoryCloner: SkillsRepositoryCloner;
   private readonly repositoryUpdater: SkillsRepositoryUpdater;
   private readonly repositoryChangesChecker: SkillsRepositoryChangesChecker;
-  private readonly gitMetadataRemover: SkillsRepositoryGitMetadataRemover;
+  private readonly submoduleManager: SkillsRepositorySubmoduleManager;
   private readonly repositoryDirectoryRemover: SkillsRepositoryDirectoryRemover;
   private readonly repositoryActivator: SkillsRepositoryActivator;
 
@@ -268,8 +544,8 @@ export class SkillsRepositoriesService {
     this.repositoryUpdater = options.repositoryUpdater ?? new GitSkillsRepositoryUpdater();
     this.repositoryChangesChecker =
       options.repositoryChangesChecker ?? new GitSkillsRepositoryChangesChecker();
-    this.gitMetadataRemover =
-      options.gitMetadataRemover ?? new LocalSkillsRepositoryGitMetadataRemover();
+    this.submoduleManager =
+      options.submoduleManager ?? new GitSkillsRepositorySubmoduleManager();
     this.repositoryDirectoryRemover =
       options.repositoryDirectoryRemover ?? new LocalSkillsRepositoryDirectoryRemover();
     this.repositoryActivator =
@@ -379,30 +655,77 @@ export class SkillsRepositoriesService {
       repository,
       directory: destinationDirectoryName(repository),
     }));
+    const existingSubmodules = await this.submoduleManager.listSubmodules(
+      options.repositoryDirectory,
+    );
+    const submodulesByDirectory = new Map(
+      existingSubmodules.map((submodule) => [submodule.directory, submodule]),
+    );
 
     for (const builtRepository of repositories) {
       const destinationDirectory = join(
         options.repositoryDirectory,
         builtRepository.directory,
       );
-      const event = {
+      const existingSubmodule = submodulesByDirectory.get(builtRepository.directory);
+      const event: SkillsRepositoryBuildRepositoryEvent = {
         ...builtRepository,
         destinationDirectory,
+        operation: existingSubmodule === undefined ? "add" : "update",
       };
 
       options.listener?.onRepositoryBuildStarted?.(event);
-      await this.repositoryDirectoryRemover.removeRepositoryDirectory(
-        destinationDirectory,
-      );
-      options.listener?.onRepositoryDirectoryRemoved?.(event);
-      await this.repositoryCloner.cloneRepository(
-        builtRepository.repository,
-        destinationDirectory,
-      );
-      options.listener?.onRepositoryCloned?.(event);
-      await this.gitMetadataRemover.removeGitMetadata(destinationDirectory);
-      options.listener?.onRepositoryGitMetadataRemoved?.(event);
+      if (existingSubmodule === undefined) {
+        await this.submoduleManager.addSubmodule(
+          options.repositoryDirectory,
+          builtRepository.repository,
+          builtRepository.directory,
+        );
+        submodulesByDirectory.set(builtRepository.directory, {
+          name: builtRepository.directory,
+          directory: builtRepository.directory,
+        });
+        options.listener?.onRepositorySubmoduleAdded?.(event);
+      } else {
+        await this.assertSubmoduleHasNoChanges(
+          options.repositoryDirectory,
+          existingSubmodule,
+        );
+        await this.submoduleManager.updateSubmodule(
+          options.repositoryDirectory,
+          builtRepository.repository,
+          existingSubmodule,
+        );
+        options.listener?.onRepositorySubmoduleUpdated?.(event);
+      }
       options.listener?.onRepositoryBuildCompleted?.(event);
+    }
+
+    const configuredDirectories = new Set(
+      repositories.map((repository) => repository.directory),
+    );
+    for (const submodule of existingSubmodules) {
+      if (configuredDirectories.has(submodule.directory)) {
+        continue;
+      }
+
+      const event = {
+        directory: submodule.directory,
+        destinationDirectory: join(
+          options.repositoryDirectory,
+          submodule.directory,
+        ),
+      };
+      options.listener?.onSubmoduleRemovalStarted?.(event);
+      await this.assertSubmoduleHasNoChanges(
+        options.repositoryDirectory,
+        submodule,
+      );
+      await this.submoduleManager.removeSubmodule(
+        options.repositoryDirectory,
+        submodule,
+      );
+      options.listener?.onSubmoduleRemoved?.(event);
     }
 
     options.listener?.onBuildCompleted?.({
@@ -411,6 +734,22 @@ export class SkillsRepositoriesService {
     });
 
     return { repositories };
+  }
+
+  private async assertSubmoduleHasNoChanges(
+    repositoryDirectory: string,
+    submodule: SkillsRepositorySubmodule,
+  ): Promise<void> {
+    if (
+      await this.submoduleManager.hasUncommittedChanges(
+        repositoryDirectory,
+        submodule,
+      )
+    ) {
+      throw new Error(
+        `Git submodule has uncommitted changes: ${submodule.directory}`,
+      );
+    }
   }
 
   async buildInstalledRepository(
@@ -493,6 +832,37 @@ function repositoryUrl(repository: SkillsRepository): string {
   return `https://github.com/${repository.owner}/${repository.name}`;
 }
 
+function parseSubmoduleConfigLine(line: string): SkillsRepositorySubmodule {
+  const match = /^(submodule\.(.+)\.path)\s+(.+)$/.exec(line);
+  if (match === null || match[2] === undefined || match[3] === undefined) {
+    throw new Error(`Invalid Git submodule configuration: ${line}`);
+  }
+
+  return {
+    name: match[2],
+    directory: match[3],
+  };
+}
+
+function resolvePathWithin(
+  parentDirectory: string,
+  childPath: string,
+  description: string,
+): string {
+  const resolvedParent = resolve(parentDirectory);
+  const resolvedChild = resolve(resolvedParent, childPath);
+  const relativeChild = relative(resolvedParent, resolvedChild);
+  if (
+    relativeChild === "" ||
+    relativeChild === ".." ||
+    relativeChild.startsWith(`..${sep}`)
+  ) {
+    throw new Error(`Invalid ${description}: ${childPath}`);
+  }
+
+  return resolvedChild;
+}
+
 function defaultReposDirectory(): string {
   return join(homedir(), ".skilled", "repos");
 }
@@ -515,4 +885,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+function isProcessExitError(error: unknown, code: number): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as { readonly code?: unknown }).code === code
+  );
 }

@@ -1,4 +1,12 @@
-import { mkdir, mkdtemp, readlink, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readlink,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -9,14 +17,17 @@ import {
   LocalSkillsRepositoryDirectoryRemover,
   LocalSkillsRepositoryActivator,
   GitSkillsRepositoryChangesChecker,
-  LocalSkillsRepositoryGitMetadataRemover,
+  GitSkillsRepositoryCloner,
+  GitSkillsRepositorySubmoduleManager,
+  GitSkillsRepositoryUpdater,
   LocalSkillsRepositoryStore,
   SkillsRepositoriesService,
   type SkillsRepository,
   type SkillsRepositoryCloner,
   type SkillsRepositoryChangesChecker,
   type SkillsRepositoryDirectoryRemover,
-  type SkillsRepositoryGitMetadataRemover,
+  type SkillsRepositorySubmodule,
+  type SkillsRepositorySubmoduleManager,
   type SkillsRepositoryStore,
   type SkillsRepositoryUpdater,
   type SkillsRepositoryActivator,
@@ -71,20 +82,6 @@ describe("LocalSkillsRepositoryBuildConfigReader", () => {
         { owner: "myuser", name: "myskills" },
       ],
     });
-  });
-});
-
-describe("LocalSkillsRepositoryGitMetadataRemover", () => {
-  it("removes the cloned repository git metadata directory", async () => {
-    const root = await createTemporaryDirectory();
-    const repositoryDirectory = join(root, "myorg-skills");
-    await mkdir(join(repositoryDirectory, ".git", "objects"), { recursive: true });
-    await writeFile(join(repositoryDirectory, ".git", "HEAD"), "ref: refs/heads/main");
-    const remover = new LocalSkillsRepositoryGitMetadataRemover();
-
-    await remover.removeGitMetadata(repositoryDirectory);
-
-    assert.deepEqual(await readdir(repositoryDirectory), []);
   });
 });
 
@@ -146,6 +143,152 @@ describe("GitSkillsRepositoryChangesChecker", () => {
     await writeFile(join(root, "README.md"), "uncommitted content");
 
     assert.equal(await checker.hasUncommittedChanges(root), true);
+  });
+});
+
+describe("GitSkillsRepositorySubmoduleManager", () => {
+  it("adds, updates, checks, and removes a Git submodule", async () => {
+    const root = await createTemporaryDirectory();
+
+    await withAllowedFileProtocol(async () => {
+      const upstream = join(root, "upstream");
+      const parent = join(root, "parent");
+      await mkdir(upstream);
+      await mkdir(parent);
+      await initializeGitRepository(upstream);
+      await writeFile(join(upstream, "README.md"), "first version");
+      await runGit(upstream, "add", "README.md");
+      await runGit(upstream, "commit", "-m", "first version");
+      await initializeGitRepository(parent);
+      await writeFile(join(parent, "skilled-repo.yml"), "skills: []\n");
+      await runGit(parent, "add", "skilled-repo.yml");
+      await runGit(parent, "commit", "-m", "initialize parent");
+
+      const manager = new GitSkillsRepositorySubmoduleManager({
+        resolveRepositoryUrl: () => upstream,
+      });
+
+      assert.deepEqual(await manager.listSubmodules(parent), []);
+      await manager.addSubmodule(
+        parent,
+        { owner: "myorg", name: "skills" },
+        "myorg-skills",
+      );
+      const [submodule] = await manager.listSubmodules(parent);
+      assert.deepEqual(submodule, {
+        name: "myorg-skills",
+        directory: "myorg-skills",
+      });
+      assert.equal(
+        await manager.hasUncommittedChanges(parent, submodule!),
+        false,
+      );
+
+      await writeFile(join(upstream, "README.md"), "second version");
+      await runGit(upstream, "add", "README.md");
+      await runGit(upstream, "commit", "-m", "second version");
+      await manager.updateSubmodule(
+        parent,
+        { owner: "myorg", name: "skills" },
+        submodule!,
+      );
+      assert.equal(
+        await readFile(join(parent, "myorg-skills", "README.md"), "utf8"),
+        "second version",
+      );
+
+      await writeFile(join(parent, "myorg-skills", "README.md"), "local change");
+      assert.equal(
+        await manager.hasUncommittedChanges(parent, submodule!),
+        true,
+      );
+      await runGit(parent, "-C", "myorg-skills", "checkout", "--", "README.md");
+
+      await manager.removeSubmodule(parent, submodule!);
+      assert.deepEqual(await manager.listSubmodules(parent), []);
+      assert.equal((await readdir(parent)).includes("myorg-skills"), false);
+    });
+  });
+
+  it("rejects a build directory that is not a Git working tree", async () => {
+    const root = await createTemporaryDirectory();
+    const manager = new GitSkillsRepositorySubmoduleManager();
+
+    await assert.rejects(
+      manager.listSubmodules(root),
+      /Not a Git working tree:/,
+    );
+  });
+});
+
+describe("Git skills repository install adapters", () => {
+  it("recursively clones and updates submodule contents", async () => {
+    const root = await createTemporaryDirectory();
+
+    await withAllowedFileProtocol(async () => {
+      const upstream = join(root, "upstream");
+      const parent = join(root, "parent");
+      const installed = join(root, "installed");
+      await mkdir(upstream);
+      await mkdir(parent);
+      await initializeGitRepository(upstream);
+      await writeFile(join(upstream, "README.md"), "first version");
+      await runGit(upstream, "add", "README.md");
+      await runGit(upstream, "commit", "-m", "first version");
+      await initializeGitRepository(parent);
+      await writeFile(join(parent, "skilled-repo.yml"), "skills: []\n");
+      await runGit(parent, "add", "skilled-repo.yml");
+      await runGit(parent, "commit", "-m", "initialize parent");
+
+      const manager = new GitSkillsRepositorySubmoduleManager({
+        resolveRepositoryUrl: () => upstream,
+      });
+      await manager.addSubmodule(
+        parent,
+        { owner: "myorg", name: "skills" },
+        "myorg-skills",
+      );
+      await runGit(parent, "commit", "-m", "add skills submodule");
+
+      const cloner = new GitSkillsRepositoryCloner({
+        resolveRepositoryUrl: () => parent,
+      });
+      await cloner.cloneRepository(
+        { owner: "myorg", name: "aggregate-skills" },
+        installed,
+      );
+      assert.equal(
+        await readFile(join(installed, "myorg-skills", "README.md"), "utf8"),
+        "first version",
+      );
+      const changesChecker = new GitSkillsRepositoryChangesChecker();
+      assert.equal(await changesChecker.hasUncommittedChanges(installed), false);
+      await writeFile(
+        join(installed, "myorg-skills", "README.md"),
+        "installed local change",
+      );
+      assert.equal(await changesChecker.hasUncommittedChanges(installed), true);
+      await runGit(installed, "-C", "myorg-skills", "checkout", "--", "README.md");
+
+      await writeFile(join(upstream, "README.md"), "second version");
+      await runGit(upstream, "add", "README.md");
+      await runGit(upstream, "commit", "-m", "second version");
+      const [submodule] = await manager.listSubmodules(parent);
+      await manager.updateSubmodule(
+        parent,
+        { owner: "myorg", name: "skills" },
+        submodule!,
+      );
+      await runGit(parent, "add", "myorg-skills");
+      await runGit(parent, "commit", "-m", "update skills submodule");
+
+      const updater = new GitSkillsRepositoryUpdater();
+      await updater.updateRepository(installed);
+      assert.equal(
+        await readFile(join(installed, "myorg-skills", "README.md"), "utf8"),
+        "second version",
+      );
+    });
   });
 });
 
@@ -335,15 +478,16 @@ describe("SkillsRepositoriesService", () => {
     assert.deepEqual(activator.activationRequests, []);
   });
 
-  it("clones configured repositories into build output directories", async () => {
+  it("adds, updates, and removes submodules to match the build config", async () => {
     const root = await createTemporaryDirectory();
     const operations: string[] = [];
     const events: string[] = [];
-    const repositoryDirectoryRemover = new RecordingSkillsRepositoryDirectoryRemover(
-      operations,
-    );
-    const cloner = new RecordingSkillsRepositoryCloner(operations);
-    const gitMetadataRemover = new RecordingSkillsRepositoryGitMetadataRemover(
+    const submoduleManager = new RecordingSkillsRepositorySubmoduleManager(
+      [
+        { name: "myorg-skills", directory: "myorg-skills" },
+        { name: "obsolete-skills", directory: "obsolete-skills" },
+      ],
+      new Set(),
       operations,
     );
     const service = new SkillsRepositoriesService(
@@ -360,9 +504,7 @@ describe("SkillsRepositoriesService", () => {
             };
           },
         },
-        repositoryDirectoryRemover,
-        repositoryCloner: cloner,
-        gitMetadataRemover,
+        submoduleManager,
       },
     );
 
@@ -374,19 +516,24 @@ describe("SkillsRepositoriesService", () => {
             events.push(`build-started ${event.repositoryDirectory}`);
           },
           onRepositoryBuildStarted(event) {
-            events.push(`repo-started ${event.repository.owner}/${event.repository.name}`);
+            events.push(
+              `repo-started ${event.operation} ${event.repository.owner}/${event.repository.name}`,
+            );
           },
-          onRepositoryDirectoryRemoved(event) {
-            events.push(`repo-removed ${event.directory}`);
+          onRepositorySubmoduleAdded(event) {
+            events.push(`repo-added ${event.directory}`);
           },
-          onRepositoryCloned(event) {
-            events.push(`repo-cloned ${event.directory}`);
-          },
-          onRepositoryGitMetadataRemoved(event) {
-            events.push(`repo-stripped ${event.directory}`);
+          onRepositorySubmoduleUpdated(event) {
+            events.push(`repo-updated ${event.directory}`);
           },
           onRepositoryBuildCompleted(event) {
             events.push(`repo-completed ${event.repository.owner}/${event.repository.name}`);
+          },
+          onSubmoduleRemovalStarted(event) {
+            events.push(`removal-started ${event.directory}`);
+          },
+          onSubmoduleRemoved(event) {
+            events.push(`removed ${event.directory}`);
           },
           onBuildCompleted(event) {
             events.push(`build-completed ${event.repositories.length}`);
@@ -406,51 +553,62 @@ describe("SkillsRepositoriesService", () => {
         ],
       },
     );
-    assert.deepEqual(cloner.cloneRequests, [
-      {
-        repository: { owner: "myorg", name: "skills" },
-        destinationDirectory: join(root, "myorg-skills"),
-      },
-      {
-        repository: { owner: "myuser", name: "myskills" },
-        destinationDirectory: join(root, "myuser-myskills"),
-      },
-    ]);
-    assert.deepEqual(repositoryDirectoryRemover.repositoryDirectories, [
-      join(root, "myorg-skills"),
-      join(root, "myuser-myskills"),
-    ]);
-    assert.deepEqual(gitMetadataRemover.repositoryDirectories, [
-      join(root, "myorg-skills"),
-      join(root, "myuser-myskills"),
-    ]);
     assert.deepEqual(operations, [
-      `remove ${join(root, "myorg-skills")}`,
-      `clone myorg/skills ${join(root, "myorg-skills")}`,
-      `strip-git ${join(root, "myorg-skills")}`,
-      `remove ${join(root, "myuser-myskills")}`,
-      `clone myuser/myskills ${join(root, "myuser-myskills")}`,
-      `strip-git ${join(root, "myuser-myskills")}`,
+      `list ${root}`,
+      `changes ${root} myorg-skills`,
+      `update ${root} myorg/skills myorg-skills`,
+      `add ${root} myuser/myskills myuser-myskills`,
+      `changes ${root} obsolete-skills`,
+      `remove ${root} obsolete-skills`,
     ]);
     assert.deepEqual(events, [
       `build-started ${root}`,
-      "repo-started myorg/skills",
-      "repo-removed myorg-skills",
-      "repo-cloned myorg-skills",
-      "repo-stripped myorg-skills",
+      "repo-started update myorg/skills",
+      "repo-updated myorg-skills",
       "repo-completed myorg/skills",
-      "repo-started myuser/myskills",
-      "repo-removed myuser-myskills",
-      "repo-cloned myuser-myskills",
-      "repo-stripped myuser-myskills",
+      "repo-started add myuser/myskills",
+      "repo-added myuser-myskills",
       "repo-completed myuser/myskills",
+      "removal-started obsolete-skills",
+      "removed obsolete-skills",
       "build-completed 2",
+    ]);
+  });
+
+  it("rejects updating a submodule with uncommitted changes", async () => {
+    const root = await createTemporaryDirectory();
+    const operations: string[] = [];
+    const submoduleManager = new RecordingSkillsRepositorySubmoduleManager(
+      [{ name: "myorg-skills", directory: "myorg-skills" }],
+      new Set(["myorg-skills"]),
+      operations,
+    );
+    const service = new SkillsRepositoriesService(
+      new StaticSkillsRepositoryStore([]),
+      pino({ level: "silent" }),
+      {
+        buildConfigReader: {
+          async readBuildConfig() {
+            return { skills: [{ owner: "myorg", name: "skills" }] };
+          },
+        },
+        submoduleManager,
+      },
+    );
+
+    await assert.rejects(
+      service.buildRepository({ repositoryDirectory: root }),
+      /Git submodule has uncommitted changes: myorg-skills/,
+    );
+    assert.deepEqual(operations, [
+      `list ${root}`,
+      `changes ${root} myorg-skills`,
     ]);
   });
 
   it("builds an installed repository from its local repository directory", async () => {
     const configDirectories: string[] = [];
-    const cloner = new RecordingSkillsRepositoryCloner();
+    const submoduleManager = new RecordingSkillsRepositorySubmoduleManager();
     const service = new SkillsRepositoriesService(
       new StaticSkillsRepositoryStore([]),
       pino({ level: "silent" }),
@@ -463,7 +621,7 @@ describe("SkillsRepositoriesService", () => {
             return { skills: [{ owner: "myorg", name: "skills" }] };
           },
         },
-        repositoryCloner: cloner,
+        submoduleManager,
       },
     );
 
@@ -474,11 +632,11 @@ describe("SkillsRepositoriesService", () => {
     assert.deepEqual(configDirectories, [
       "/home/test/.skilled/repos/hekonsek/skilled-repo",
     ]);
-    assert.deepEqual(cloner.cloneRequests, [
+    assert.deepEqual(submoduleManager.addRequests, [
       {
+        repositoryDirectory: "/home/test/.skilled/repos/hekonsek/skilled-repo",
         repository: { owner: "myorg", name: "skills" },
-        destinationDirectory:
-          "/home/test/.skilled/repos/hekonsek/skilled-repo/myorg-skills",
+        submoduleDirectory: "myorg-skills",
       },
     ]);
   });
@@ -555,16 +713,66 @@ class RecordingSkillsRepositoryUpdater implements SkillsRepositoryUpdater {
   }
 }
 
-class RecordingSkillsRepositoryGitMetadataRemover
-  implements SkillsRepositoryGitMetadataRemover
+class RecordingSkillsRepositorySubmoduleManager
+  implements SkillsRepositorySubmoduleManager
 {
-  readonly repositoryDirectories: string[] = [];
+  readonly addRequests: {
+    readonly repositoryDirectory: string;
+    readonly repository: SkillsRepository;
+    readonly submoduleDirectory: string;
+  }[] = [];
 
-  constructor(private readonly operations: string[] = []) {}
+  constructor(
+    private readonly submodules: readonly SkillsRepositorySubmodule[] = [],
+    private readonly dirtySubmodules: ReadonlySet<string> = new Set(),
+    private readonly operations: string[] = [],
+  ) {}
 
-  async removeGitMetadata(repositoryDirectory: string): Promise<void> {
-    this.repositoryDirectories.push(repositoryDirectory);
-    this.operations.push(`strip-git ${repositoryDirectory}`);
+  async listSubmodules(
+    repositoryDirectory: string,
+  ): Promise<readonly SkillsRepositorySubmodule[]> {
+    this.operations.push(`list ${repositoryDirectory}`);
+    return this.submodules;
+  }
+
+  async hasUncommittedChanges(
+    repositoryDirectory: string,
+    submodule: SkillsRepositorySubmodule,
+  ): Promise<boolean> {
+    this.operations.push(`changes ${repositoryDirectory} ${submodule.directory}`);
+    return this.dirtySubmodules.has(submodule.directory);
+  }
+
+  async addSubmodule(
+    repositoryDirectory: string,
+    repository: SkillsRepository,
+    submoduleDirectory: string,
+  ): Promise<void> {
+    this.addRequests.push({
+      repositoryDirectory,
+      repository,
+      submoduleDirectory,
+    });
+    this.operations.push(
+      `add ${repositoryDirectory} ${repository.owner}/${repository.name} ${submoduleDirectory}`,
+    );
+  }
+
+  async updateSubmodule(
+    repositoryDirectory: string,
+    repository: SkillsRepository,
+    submodule: SkillsRepositorySubmodule,
+  ): Promise<void> {
+    this.operations.push(
+      `update ${repositoryDirectory} ${repository.owner}/${repository.name} ${submodule.directory}`,
+    );
+  }
+
+  async removeSubmodule(
+    repositoryDirectory: string,
+    submodule: SkillsRepositorySubmodule,
+  ): Promise<void> {
+    this.operations.push(`remove ${repositoryDirectory} ${submodule.directory}`);
   }
 }
 
@@ -601,4 +809,25 @@ async function runGit(directory: string, ...args: readonly string[]): Promise<vo
       }
     });
   });
+}
+
+async function initializeGitRepository(directory: string): Promise<void> {
+  await runGit(directory, "init", "--initial-branch", "main");
+  await runGit(directory, "config", "user.name", "Skilled Tests");
+  await runGit(directory, "config", "user.email", "tests@skilled.local");
+}
+
+async function withAllowedFileProtocol(action: () => Promise<void>): Promise<void> {
+  const originalAllowedProtocols = process.env.GIT_ALLOW_PROTOCOL;
+  process.env.GIT_ALLOW_PROTOCOL = "file";
+
+  try {
+    await action();
+  } finally {
+    if (originalAllowedProtocols === undefined) {
+      delete process.env.GIT_ALLOW_PROTOCOL;
+    } else {
+      process.env.GIT_ALLOW_PROTOCOL = originalAllowedProtocols;
+    }
+  }
 }

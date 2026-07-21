@@ -8,6 +8,8 @@ import type {
   SkillsRepositoryChangesChecker,
   SkillsRepositoryCloner,
   SkillsRepositoryDirectoryRemover,
+  SkillsRepositorySubmodule,
+  SkillsRepositorySubmoduleManager,
   SkillsRepositoryUpdater,
   SkillsRepository,
   SkillsRepositoryStore,
@@ -172,7 +174,13 @@ describe("createCli", () => {
   it("builds a skills repository from the configured directory", async () => {
     const stdout = new MemoryWritable();
     const stderr = new MemoryWritable();
-    const cloner = new RecordingSkillsRepositoryCloner(() => stdout.toString());
+    const submoduleManager = new RecordingSkillsRepositorySubmoduleManager(
+      [
+        { name: "myorg-skills", directory: "myorg-skills" },
+        { name: "obsolete-skills", directory: "obsolete-skills" },
+      ],
+      () => stdout.toString(),
+    );
 
     await createCli({
       version: "1.2.3",
@@ -185,7 +193,7 @@ describe("createCli", () => {
           { owner: "myuser", name: "myskills" },
         ],
       }),
-      repositoryCloner: cloner,
+      submoduleManager,
     }).parseAsync(["node", "skilled", "repo", "build", "--dir", "/workspace/skills"]);
 
     assert.equal(
@@ -196,38 +204,27 @@ describe("createCli", () => {
       stderr.toString(),
       [
         "• Building skills repository in /workspace/skills",
-        "• Preparing myorg/skills",
-        "• Cloned myorg/skills",
-        "• Stripped Git metadata from myorg-skills",
-        "✓ Built myorg/skills",
-        "• Preparing myuser/myskills",
-        "• Cloned myuser/myskills",
-        "• Stripped Git metadata from myuser-myskills",
-        "✓ Built myuser/myskills",
+        "• Updating myorg/skills",
+        "✓ Updated myorg/skills",
+        "• Adding myuser/myskills",
+        "✓ Added myuser/myskills",
+        "• Removing obsolete-skills",
+        "✓ Removed obsolete-skills",
         "✓ Built 2 skills repositories.",
         "",
       ].join("\n"),
     );
-    assert.deepEqual(cloner.cloneRequests, [
-      {
-        repository: { owner: "myorg", name: "skills" },
-        destinationDirectory: "/workspace/skills/myorg-skills",
-      },
-      {
-        repository: { owner: "myuser", name: "myskills" },
-        destinationDirectory: "/workspace/skills/myuser-myskills",
-      },
-    ]);
-    assert.deepEqual(cloner.stdoutSnapshots, [
+    assert.deepEqual(submoduleManager.stdoutSnapshots, [
       "",
       "📦 myorg/skills\n",
+      "📦 myorg/skills\n📦 myuser/myskills\n",
     ]);
   });
 
   it("builds a locally installed skills repository", async () => {
     const stdout = new MemoryWritable();
     const stderr = new MemoryWritable();
-    const cloner = new RecordingSkillsRepositoryCloner();
+    const submoduleManager = new RecordingSkillsRepositorySubmoduleManager();
 
     await createCli({
       version: "1.2.3",
@@ -237,7 +234,7 @@ describe("createCli", () => {
       buildConfigReader: new StaticSkillsRepositoryBuildConfigReader({
         skills: [{ owner: "myorg", name: "skills" }],
       }),
-      repositoryCloner: cloner,
+      submoduleManager,
       reposDirectory: "/home/test/.skilled/repos",
     }).parseAsync([
       "node",
@@ -252,11 +249,12 @@ describe("createCli", () => {
       stderr.toString(),
       /Building skills repository in \/home\/test\/\.skilled\/repos\/hekonsek\/skilled-repo/,
     );
-    assert.deepEqual(cloner.cloneRequests, [
+    assert.deepEqual(submoduleManager.addRequests, [
       {
+        repositoryDirectory:
+          "/home/test/.skilled/repos/hekonsek/skilled-repo",
         repository: { owner: "myorg", name: "skills" },
-        destinationDirectory:
-          "/home/test/.skilled/repos/hekonsek/skilled-repo/myorg-skills",
+        submoduleDirectory: "myorg-skills",
       },
     ]);
   });
@@ -372,6 +370,51 @@ class StaticSkillsRepositoryChangesChecker
 
   async hasUncommittedChanges(): Promise<boolean> {
     return this.hasChanges;
+  }
+}
+
+class RecordingSkillsRepositorySubmoduleManager
+  implements SkillsRepositorySubmoduleManager
+{
+  readonly addRequests: {
+    readonly repositoryDirectory: string;
+    readonly repository: SkillsRepository;
+    readonly submoduleDirectory: string;
+  }[] = [];
+  readonly stdoutSnapshots: string[] = [];
+
+  constructor(
+    private readonly submodules: readonly SkillsRepositorySubmodule[] = [],
+    private readonly readStdout: () => string = () => "",
+  ) {}
+
+  async listSubmodules(): Promise<readonly SkillsRepositorySubmodule[]> {
+    return this.submodules;
+  }
+
+  async hasUncommittedChanges(): Promise<boolean> {
+    return false;
+  }
+
+  async addSubmodule(
+    repositoryDirectory: string,
+    repository: SkillsRepository,
+    submoduleDirectory: string,
+  ): Promise<void> {
+    this.stdoutSnapshots.push(this.readStdout());
+    this.addRequests.push({
+      repositoryDirectory,
+      repository,
+      submoduleDirectory,
+    });
+  }
+
+  async updateSubmodule(): Promise<void> {
+    this.stdoutSnapshots.push(this.readStdout());
+  }
+
+  async removeSubmodule(): Promise<void> {
+    this.stdoutSnapshots.push(this.readStdout());
   }
 }
 

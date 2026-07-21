@@ -9,6 +9,7 @@ import {
   type SkillsRepositoryCloner,
   type SkillsRepositoryDirectoryRemover,
   type SkillsRepositoryChangesChecker,
+  type SkillsRepositorySubmoduleManager,
   type SkillsRepositoryInstallListener,
   type SkillsRepository,
   type SkillsRepositoryUpdater,
@@ -38,6 +39,7 @@ export interface CreateCliOptions {
   readonly repositoryDirectoryRemover?: SkillsRepositoryDirectoryRemover;
   readonly repositoryChangesChecker?: SkillsRepositoryChangesChecker;
   readonly repositoryUpdater?: SkillsRepositoryUpdater;
+  readonly submoduleManager?: SkillsRepositorySubmoduleManager;
   readonly repositoryActivator?: SkillsRepositoryActivator;
   readonly reposDirectory?: string;
   readonly skillsDirectory?: string;
@@ -182,8 +184,7 @@ export function createCli(options: CreateCliOptions): Command {
         {
           reposDirectory: options.reposDirectory,
           buildConfigReader: options.buildConfigReader,
-          repositoryCloner: options.repositoryCloner,
-          repositoryDirectoryRemover: options.repositoryDirectoryRemover,
+          submoduleManager: options.submoduleManager,
         },
       );
       const buildProgress = createBuildProgressRenderer(stdout, stderr);
@@ -292,19 +293,28 @@ function createSpinnerBuildProgressRenderer(
         }).start();
       },
       onRepositoryBuildStarted(event) {
-        updateSpinner(spinner, `Preparing ${repositoryReference(event.repository)}`);
+        updateSpinner(spinner, buildRepositoryProgressMessage(event));
       },
-      onRepositoryCloned(event) {
+      onRepositorySubmoduleAdded(event) {
         stdout.write(
           `${repositoryMarker(stdout)} ${repositoryReference(event.repository)}\n`,
         );
-        updateSpinner(spinner, `Cloned ${repositoryReference(event.repository)}`);
+        updateSpinner(spinner, `Added ${repositoryReference(event.repository)}`);
       },
-      onRepositoryGitMetadataRemoved(event) {
-        updateSpinner(spinner, `Stripped Git metadata from ${event.directory}`);
+      onRepositorySubmoduleUpdated(event) {
+        stdout.write(
+          `${repositoryMarker(stdout)} ${repositoryReference(event.repository)}\n`,
+        );
+        updateSpinner(spinner, `Updated ${repositoryReference(event.repository)}`);
       },
       onRepositoryBuildCompleted(event) {
         updateSpinner(spinner, `Built ${repositoryReference(event.repository)}`);
+      },
+      onSubmoduleRemovalStarted(event) {
+        updateSpinner(spinner, `Removing ${event.directory}`);
+      },
+      onSubmoduleRemoved(event) {
+        updateSpinner(spinner, `Removed ${event.directory}`);
       },
       onBuildCompleted(event) {
         spinner?.succeed(`Built ${event.repositories.length} skills repositories.`);
@@ -326,25 +336,33 @@ function createLineBuildProgressRenderer(
       },
       onRepositoryBuildStarted(event) {
         stderr.write(
-          `${progressMarker(stderr)} Preparing ${repositoryReference(event.repository)}\n`,
+          `${progressMarker(stderr)} ${buildRepositoryProgressMessage(event)}\n`,
         );
       },
-      onRepositoryCloned(event) {
+      onRepositorySubmoduleAdded(event) {
         stdout.write(
           `${repositoryMarker(stdout)} ${repositoryReference(event.repository)}\n`,
         );
         stderr.write(
-          `${progressMarker(stderr)} Cloned ${repositoryReference(event.repository)}\n`,
+          `${successMarker(stderr)} Added ${repositoryReference(event.repository)}\n`,
         );
       },
-      onRepositoryGitMetadataRemoved(event) {
+      onRepositorySubmoduleUpdated(event) {
+        stdout.write(
+          `${repositoryMarker(stdout)} ${repositoryReference(event.repository)}\n`,
+        );
         stderr.write(
-          `${progressMarker(stderr)} Stripped Git metadata from ${event.directory}\n`,
+          `${successMarker(stderr)} Updated ${repositoryReference(event.repository)}\n`,
         );
       },
-      onRepositoryBuildCompleted(event) {
+      onSubmoduleRemovalStarted(event) {
         stderr.write(
-          `${successMarker(stderr)} Built ${repositoryReference(event.repository)}\n`,
+          `${progressMarker(stderr)} Removing ${event.directory}\n`,
+        );
+      },
+      onSubmoduleRemoved(event) {
+        stderr.write(
+          `${successMarker(stderr)} Removed ${event.directory}\n`,
         );
       },
       onBuildCompleted(event) {
@@ -354,6 +372,15 @@ function createLineBuildProgressRenderer(
       },
     },
   };
+}
+
+function buildRepositoryProgressMessage(event: {
+  readonly repository: SkillsRepository;
+  readonly operation: "add" | "update";
+}): string {
+  const action = event.operation === "add" ? "Adding" : "Updating";
+
+  return `${action} ${repositoryReference(event.repository)}`;
 }
 
 function updateSpinner(spinner: Ora | undefined, text: string): void {
