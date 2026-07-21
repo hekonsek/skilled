@@ -12,6 +12,7 @@ import {
   type SkillsRepositoryInstallListener,
   type SkillsRepository,
   type SkillsRepositoryUpdater,
+  type SkillsRepositoryActivator,
   LocalSkillsRepositoryStore,
   SkillsRepositoriesService,
   type SkillsRepositoryStore,
@@ -37,7 +38,9 @@ export interface CreateCliOptions {
   readonly repositoryDirectoryRemover?: SkillsRepositoryDirectoryRemover;
   readonly repositoryChangesChecker?: SkillsRepositoryChangesChecker;
   readonly repositoryUpdater?: SkillsRepositoryUpdater;
+  readonly repositoryActivator?: SkillsRepositoryActivator;
   readonly reposDirectory?: string;
+  readonly skillsDirectory?: string;
   readonly currentDirectory?: string;
 }
 
@@ -122,6 +125,34 @@ export function createCli(options: CreateCliOptions): Command {
       if (repositories.length === 0) {
         stderr.write("No skills repositories downloaded.\n");
       }
+    });
+
+  repo
+    .command("use")
+    .description("Use an installed skills repository.")
+    .argument("<repository>", "installed repository in owner/name format")
+    .action(async (repositoryReference: string) => {
+      const globalOptions = program.opts<GlobalOptions>();
+      const logger = pino(
+        { level: globalOptions.logger },
+        pino.destination({ dest: 2, sync: true }),
+      ).child({ adapter: "cli", command: "repo use" });
+      const service = new SkillsRepositoriesService(
+        options.repositoryStore ??
+          new LocalSkillsRepositoryStore({ reposDirectory: options.reposDirectory }),
+        logger,
+        {
+          reposDirectory: options.reposDirectory,
+          skillsDirectory: options.skillsDirectory,
+          repositoryActivator: options.repositoryActivator,
+        },
+      );
+
+      const result = await service.useRepository({ repositoryReference });
+      stdout.write(`${repositoryMarker(stdout)} ${repositoryReference}\n`);
+      stderr.write(
+        `${successMarker(stderr)} Using ${repositoryReference} at ${result.skillsDirectory}.\n`,
+      );
     });
 
   repo

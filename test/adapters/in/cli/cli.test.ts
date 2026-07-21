@@ -11,6 +11,7 @@ import type {
   SkillsRepositoryUpdater,
   SkillsRepository,
   SkillsRepositoryStore,
+  SkillsRepositoryActivator,
 } from "../../../../src/services/repositories/skills-repositories.service.js";
 
 describe("createCli", () => {
@@ -134,6 +135,36 @@ describe("createCli", () => {
       {
         repository: { owner: "hekonsek", name: "skilled-repo" },
         destinationDirectory: "/home/test/.skilled/repos/hekonsek/skilled-repo",
+      },
+    ]);
+  });
+
+  it("uses an installed skills repository", async () => {
+    const stdout = new MemoryWritable();
+    const stderr = new MemoryWritable();
+    const activator = new RecordingSkillsRepositoryActivator();
+
+    await createCli({
+      version: "1.2.3",
+      stdout,
+      stderr,
+      repositoryStore: new StaticSkillsRepositoryStore([
+        { owner: "hekonsek", name: "skilled-repo" },
+      ]),
+      repositoryActivator: activator,
+      reposDirectory: "/home/test/.skilled/repos",
+      skillsDirectory: "/home/test/.agents/skills",
+    }).parseAsync(["node", "skilled", "repo", "use", "hekonsek/skilled-repo"]);
+
+    assert.equal(stdout.toString(), "📦 hekonsek/skilled-repo\n");
+    assert.equal(
+      stderr.toString(),
+      "✓ Using hekonsek/skilled-repo at /home/test/.agents/skills.\n",
+    );
+    assert.deepEqual(activator.activationRequests, [
+      {
+        repositoryDirectory: "/home/test/.skilled/repos/hekonsek/skilled-repo",
+        skillsDirectory: "/home/test/.agents/skills",
       },
     ]);
   });
@@ -341,6 +372,20 @@ class StaticSkillsRepositoryChangesChecker
 
   async hasUncommittedChanges(): Promise<boolean> {
     return this.hasChanges;
+  }
+}
+
+class RecordingSkillsRepositoryActivator implements SkillsRepositoryActivator {
+  readonly activationRequests: {
+    readonly repositoryDirectory: string;
+    readonly skillsDirectory: string;
+  }[] = [];
+
+  async activateRepository(
+    repositoryDirectory: string,
+    skillsDirectory: string,
+  ): Promise<void> {
+    this.activationRequests.push({ repositoryDirectory, skillsDirectory });
   }
 }
 

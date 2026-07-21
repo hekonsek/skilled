@@ -16,5 +16,6 @@ npm test
 skilled version
 skilled repo install <owner>/<name>
 skilled repo list
+skilled repo use <owner>/<name>
 skilled repo build [--dir <directory> | --installed-repo <owner>/<name>]
 ```

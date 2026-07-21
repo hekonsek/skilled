@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readlink, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -7,6 +7,7 @@ import pino from "pino";
 import {
   LocalSkillsRepositoryBuildConfigReader,
   LocalSkillsRepositoryDirectoryRemover,
+  LocalSkillsRepositoryActivator,
   GitSkillsRepositoryChangesChecker,
   LocalSkillsRepositoryGitMetadataRemover,
   LocalSkillsRepositoryStore,
@@ -18,6 +19,7 @@ import {
   type SkillsRepositoryGitMetadataRemover,
   type SkillsRepositoryStore,
   type SkillsRepositoryUpdater,
+  type SkillsRepositoryActivator,
 } from "../../../src/services/repositories/skills-repositories.service.js";
 
 const temporaryDirectories: string[] = [];
@@ -97,6 +99,39 @@ describe("LocalSkillsRepositoryDirectoryRemover", () => {
     await remover.removeRepositoryDirectory(repositoryDirectory);
 
     assert.deepEqual(await readdir(root), []);
+  });
+});
+
+describe("LocalSkillsRepositoryActivator", () => {
+  it("creates the skills symlink and replaces an existing symlink", async () => {
+    const root = await createTemporaryDirectory();
+    const firstRepository = join(root, ".skilled", "repos", "myorg", "skills");
+    const secondRepository = join(root, ".skilled", "repos", "myuser", "skills");
+    const skillsDirectory = join(root, ".agents", "skills");
+    await mkdir(firstRepository, { recursive: true });
+    await mkdir(secondRepository, { recursive: true });
+    const activator = new LocalSkillsRepositoryActivator();
+
+    await activator.activateRepository(firstRepository, skillsDirectory);
+    assert.equal(await readlink(skillsDirectory), firstRepository);
+
+    await activator.activateRepository(secondRepository, skillsDirectory);
+    assert.equal(await readlink(skillsDirectory), secondRepository);
+  });
+
+  it("does not replace an existing real skills directory", async () => {
+    const root = await createTemporaryDirectory();
+    const repositoryDirectory = join(root, ".skilled", "repos", "myorg", "skills");
+    const skillsDirectory = join(root, ".agents", "skills");
+    await mkdir(repositoryDirectory, { recursive: true });
+    await mkdir(skillsDirectory, { recursive: true });
+    await writeFile(join(skillsDirectory, "local-skill.md"), "keep me");
+    const activator = new LocalSkillsRepositoryActivator();
+
+    await assert.rejects(
+      activator.activateRepository(repositoryDirectory, skillsDirectory),
+    );
+    assert.deepEqual(await readdir(skillsDirectory), ["local-skill.md"]);
   });
 });
 
@@ -253,6 +288,51 @@ describe("SkillsRepositoriesService", () => {
     );
     assert.deepEqual(cloner.cloneRequests, []);
     assert.deepEqual(updater.repositoryDirectories, []);
+  });
+
+  it("uses an installed repository as the agents skills directory", async () => {
+    const activator = new RecordingSkillsRepositoryActivator();
+    const service = new SkillsRepositoriesService(
+      new StaticSkillsRepositoryStore([
+        { owner: "hekonsek", name: "skilled-repo" },
+      ]),
+      pino({ level: "silent" }),
+      {
+        reposDirectory: "/home/test/.skilled/repos",
+        skillsDirectory: "/home/test/.agents/skills",
+        repositoryActivator: activator,
+      },
+    );
+
+    assert.deepEqual(
+      await service.useRepository({ repositoryReference: "hekonsek/skilled-repo" }),
+      {
+        repository: { owner: "hekonsek", name: "skilled-repo" },
+        repositoryDirectory: "/home/test/.skilled/repos/hekonsek/skilled-repo",
+        skillsDirectory: "/home/test/.agents/skills",
+      },
+    );
+    assert.deepEqual(activator.activationRequests, [
+      {
+        repositoryDirectory: "/home/test/.skilled/repos/hekonsek/skilled-repo",
+        skillsDirectory: "/home/test/.agents/skills",
+      },
+    ]);
+  });
+
+  it("rejects using a repository that is not installed", async () => {
+    const activator = new RecordingSkillsRepositoryActivator();
+    const service = new SkillsRepositoriesService(
+      new StaticSkillsRepositoryStore([]),
+      pino({ level: "silent" }),
+      { repositoryActivator: activator },
+    );
+
+    await assert.rejects(
+      service.useRepository({ repositoryReference: "hekonsek/skilled-repo" }),
+      /Skills repository is not installed: hekonsek\/skilled-repo/,
+    );
+    assert.deepEqual(activator.activationRequests, []);
   });
 
   it("clones configured repositories into build output directories", async () => {
@@ -485,6 +565,20 @@ class RecordingSkillsRepositoryGitMetadataRemover
   async removeGitMetadata(repositoryDirectory: string): Promise<void> {
     this.repositoryDirectories.push(repositoryDirectory);
     this.operations.push(`strip-git ${repositoryDirectory}`);
+  }
+}
+
+class RecordingSkillsRepositoryActivator implements SkillsRepositoryActivator {
+  readonly activationRequests: {
+    readonly repositoryDirectory: string;
+    readonly skillsDirectory: string;
+  }[] = [];
+
+  async activateRepository(
+    repositoryDirectory: string,
+    skillsDirectory: string,
+  ): Promise<void> {
+    this.activationRequests.push({ repositoryDirectory, skillsDirectory });
   }
 }
 
