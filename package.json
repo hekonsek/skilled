@@ -1,6 +1,6 @@
 {
   "name": "@hekonsek/skilled",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "CLI tool for working with agentic AI skills.",
   "type": "module",
   "repository": {
