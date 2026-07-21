@@ -6,6 +6,8 @@ import type {
   SkillsRepositoryBuildConfig,
   SkillsRepositoryBuildConfigReader,
   SkillsRepositoryCloner,
+  SkillsRepositoryDirectoryRemover,
+  SkillsRepositoryUpdater,
   SkillsRepository,
   SkillsRepositoryStore,
 } from "../../../../src/services/repositories/skills-repositories.service.js";
@@ -38,6 +40,62 @@ describe("createCli", () => {
     }).parseAsync(["node", "skilled", "repo", "list"]);
 
     assert.equal(stdout.toString(), "📦 myorg/skills\n📦 myuser/myskills\n");
+  });
+
+  it("installs a GitHub repository into the local repositories directory", async () => {
+    const stdout = new MemoryWritable();
+    const stderr = new MemoryWritable();
+    const cloner = new RecordingSkillsRepositoryCloner();
+
+    await createCli({
+      version: "1.2.3",
+      stdout,
+      stderr,
+      repositoryStore: new StaticSkillsRepositoryStore([]),
+      repositoryCloner: cloner,
+      reposDirectory: "/home/test/.skilled/repos",
+    }).parseAsync(["node", "skilled", "repo", "install", "hekonsek/skilled-repo"]);
+
+    assert.equal(stdout.toString(), "📦 hekonsek/skilled-repo\n");
+    assert.equal(
+      stderr.toString(),
+      "• Downloading hekonsek/skilled-repo\n✓ Downloaded hekonsek/skilled-repo.\n",
+    );
+    assert.deepEqual(cloner.cloneRequests, [
+      {
+        repository: { owner: "hekonsek", name: "skilled-repo" },
+        destinationDirectory: "/home/test/.skilled/repos/hekonsek/skilled-repo",
+      },
+    ]);
+  });
+
+  it("updates an installed GitHub repository in place", async () => {
+    const stdout = new MemoryWritable();
+    const stderr = new MemoryWritable();
+    const cloner = new RecordingSkillsRepositoryCloner();
+    const updater = new RecordingSkillsRepositoryUpdater();
+
+    await createCli({
+      version: "1.2.3",
+      stdout,
+      stderr,
+      repositoryStore: new StaticSkillsRepositoryStore([
+        { owner: "hekonsek", name: "skilled-repo" },
+      ]),
+      repositoryCloner: cloner,
+      repositoryUpdater: updater,
+      reposDirectory: "/home/test/.skilled/repos",
+    }).parseAsync(["node", "skilled", "repo", "install", "hekonsek/skilled-repo"]);
+
+    assert.equal(stdout.toString(), "📦 hekonsek/skilled-repo\n");
+    assert.equal(
+      stderr.toString(),
+      "• Updating hekonsek/skilled-repo\n✓ Updated hekonsek/skilled-repo.\n",
+    );
+    assert.deepEqual(cloner.cloneRequests, []);
+    assert.deepEqual(updater.repositoryDirectories, [
+      "/home/test/.skilled/repos/hekonsek/skilled-repo",
+    ]);
   });
 
   it("builds a skills repository from the configured directory", async () => {
@@ -143,6 +201,24 @@ class RecordingSkillsRepositoryCloner implements SkillsRepositoryCloner {
   ): Promise<void> {
     this.stdoutSnapshots.push(this.readStdout());
     this.cloneRequests.push({ repository, destinationDirectory });
+  }
+}
+
+class RecordingSkillsRepositoryDirectoryRemover
+  implements SkillsRepositoryDirectoryRemover
+{
+  readonly repositoryDirectories: string[] = [];
+
+  async removeRepositoryDirectory(repositoryDirectory: string): Promise<void> {
+    this.repositoryDirectories.push(repositoryDirectory);
+  }
+}
+
+class RecordingSkillsRepositoryUpdater implements SkillsRepositoryUpdater {
+  readonly repositoryDirectories: string[] = [];
+
+  async updateRepository(repositoryDirectory: string): Promise<void> {
+    this.repositoryDirectories.push(repositoryDirectory);
   }
 }
 

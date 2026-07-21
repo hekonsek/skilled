@@ -7,6 +7,10 @@ import {
   type SkillsRepositoryBuildListener,
   type SkillsRepositoryBuildConfigReader,
   type SkillsRepositoryCloner,
+  type SkillsRepositoryDirectoryRemover,
+  type SkillsRepositoryInstallListener,
+  type SkillsRepository,
+  type SkillsRepositoryUpdater,
   LocalSkillsRepositoryStore,
   SkillsRepositoriesService,
   type SkillsRepositoryStore,
@@ -29,6 +33,9 @@ export interface CreateCliOptions {
   readonly repositoryStore?: SkillsRepositoryStore;
   readonly buildConfigReader?: SkillsRepositoryBuildConfigReader;
   readonly repositoryCloner?: SkillsRepositoryCloner;
+  readonly repositoryDirectoryRemover?: SkillsRepositoryDirectoryRemover;
+  readonly repositoryUpdater?: SkillsRepositoryUpdater;
+  readonly reposDirectory?: string;
   readonly currentDirectory?: string;
 }
 
@@ -61,6 +68,31 @@ export function createCli(options: CreateCliOptions): Command {
     });
 
   const repo = program.command("repo").description("Manage skills repositories.");
+
+  repo
+    .command("install")
+    .description("Download a skills repository onto this device.")
+    .argument("<repository>", "GitHub repository in owner/name format")
+    .action(async (repositoryReference: string) => {
+      const globalOptions = program.opts<GlobalOptions>();
+      const logger = pino(
+        { level: globalOptions.logger },
+        pino.destination({ dest: 2, sync: true }),
+      ).child({ adapter: "cli", command: "repo install" });
+      const repositoryStore =
+        options.repositoryStore ??
+        new LocalSkillsRepositoryStore({ reposDirectory: options.reposDirectory });
+      const service = new SkillsRepositoriesService(repositoryStore, logger, {
+        reposDirectory: options.reposDirectory,
+        repositoryCloner: options.repositoryCloner,
+        repositoryUpdater: options.repositoryUpdater,
+      });
+
+      await service.installRepository({
+        repositoryReference,
+        listener: createInstallProgressRenderer(stdout, stderr),
+      });
+    });
 
   repo
     .command("list")
@@ -104,6 +136,7 @@ export function createCli(options: CreateCliOptions): Command {
         {
           buildConfigReader: options.buildConfigReader,
           repositoryCloner: options.repositoryCloner,
+          repositoryDirectoryRemover: options.repositoryDirectoryRemover,
         },
       );
       const buildProgress = createBuildProgressRenderer(stdout, stderr);
@@ -119,6 +152,64 @@ export function createCli(options: CreateCliOptions): Command {
 
 interface BuildProgressRenderer {
   readonly listener: SkillsRepositoryBuildListener;
+}
+
+function createInstallProgressRenderer(
+  stdout: NodeJS.WritableStream,
+  stderr: NodeJS.WritableStream,
+): SkillsRepositoryInstallListener {
+  let spinner: Ora | undefined;
+
+  if (shouldUseSpinner(stderr)) {
+    return {
+      onInstallStarted(event) {
+        spinner = ora({
+          stream: stderr,
+          text: installProgressMessage(event),
+        }).start();
+      },
+      onInstallCompleted(event) {
+        stdout.write(
+          `${repositoryMarker(stdout)} ${repositoryReference(event.repository)}\n`,
+        );
+        spinner?.succeed(installCompletedMessage(event));
+      },
+    };
+  }
+
+  return {
+    onInstallStarted(event) {
+      stderr.write(
+        `${progressMarker(stderr)} ${installProgressMessage(event)}\n`,
+      );
+    },
+    onInstallCompleted(event) {
+      stdout.write(
+        `${repositoryMarker(stdout)} ${repositoryReference(event.repository)}\n`,
+      );
+      stderr.write(
+        `${successMarker(stderr)} ${installCompletedMessage(event)}\n`,
+      );
+    },
+  };
+}
+
+function installProgressMessage(event: {
+  readonly repository: SkillsRepository;
+  readonly operation: "install" | "update";
+}): string {
+  const action = event.operation === "update" ? "Updating" : "Downloading";
+
+  return `${action} ${repositoryReference(event.repository)}`;
+}
+
+function installCompletedMessage(event: {
+  readonly repository: SkillsRepository;
+  readonly operation: "install" | "update";
+}): string {
+  const action = event.operation === "update" ? "Updated" : "Downloaded";
+
+  return `${action} ${repositoryReference(event.repository)}.`;
 }
 
 function createBuildProgressRenderer(

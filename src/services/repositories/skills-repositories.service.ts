@@ -1,7 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { Logger } from "pino";
 import { parse } from "yaml";
@@ -27,6 +27,32 @@ export interface SkillsRepositoryBuildConfigReader {
 
 export interface SkillsRepositoryCloner {
   cloneRepository(repository: SkillsRepository, destinationDirectory: string): Promise<void>;
+}
+
+export interface SkillsRepositoryUpdater {
+  updateRepository(repositoryDirectory: string): Promise<void>;
+}
+
+export interface InstallSkillsRepositoryOptions {
+  readonly repositoryReference: string;
+  readonly listener?: SkillsRepositoryInstallListener;
+}
+
+export interface SkillsRepositoryInstallListener {
+  onInstallStarted?(event: SkillsRepositoryInstallEvent): void;
+  onInstallCompleted?(event: SkillsRepositoryInstallEvent): void;
+}
+
+export interface SkillsRepositoryInstallEvent {
+  readonly repository: SkillsRepository;
+  readonly destinationDirectory: string;
+  readonly operation: "install" | "update";
+}
+
+export interface InstallSkillsRepositoryResult {
+  readonly repository: SkillsRepository;
+  readonly destinationDirectory: string;
+  readonly operation: "install" | "update";
 }
 
 export interface SkillsRepositoryGitMetadataRemover {
@@ -84,7 +110,7 @@ export class LocalSkillsRepositoryStore implements SkillsRepositoryStore {
   private readonly reposDirectory: string;
 
   constructor(options: LocalSkillsRepositoryStoreOptions = {}) {
-    this.reposDirectory = options.reposDirectory ?? join(homedir(), ".skilled", "repos");
+    this.reposDirectory = options.reposDirectory ?? defaultReposDirectory();
   }
 
   async listDownloadedRepositories(): Promise<readonly SkillsRepository[]> {
@@ -123,7 +149,14 @@ export class GitSkillsRepositoryCloner implements SkillsRepositoryCloner {
     repository: SkillsRepository,
     destinationDirectory: string,
   ): Promise<void> {
+    await mkdir(dirname(destinationDirectory), { recursive: true });
     await execFile("git", ["clone", repositoryUrl(repository), destinationDirectory]);
+  }
+}
+
+export class GitSkillsRepositoryUpdater implements SkillsRepositoryUpdater {
+  async updateRepository(repositoryDirectory: string): Promise<void> {
+    await execFile("git", ["-C", repositoryDirectory, "pull", "--ff-only"]);
   }
 }
 
@@ -144,16 +177,20 @@ export class LocalSkillsRepositoryDirectoryRemover
 }
 
 export interface SkillsRepositoriesServiceOptions {
+  readonly reposDirectory?: string;
   readonly buildConfigReader?: SkillsRepositoryBuildConfigReader;
   readonly repositoryCloner?: SkillsRepositoryCloner;
+  readonly repositoryUpdater?: SkillsRepositoryUpdater;
   readonly gitMetadataRemover?: SkillsRepositoryGitMetadataRemover;
   readonly repositoryDirectoryRemover?: SkillsRepositoryDirectoryRemover;
 }
 
 export class SkillsRepositoriesService {
   private readonly logger: Logger;
+  private readonly reposDirectory: string;
   private readonly buildConfigReader: SkillsRepositoryBuildConfigReader;
   private readonly repositoryCloner: SkillsRepositoryCloner;
+  private readonly repositoryUpdater: SkillsRepositoryUpdater;
   private readonly gitMetadataRemover: SkillsRepositoryGitMetadataRemover;
   private readonly repositoryDirectoryRemover: SkillsRepositoryDirectoryRemover;
 
@@ -163,9 +200,11 @@ export class SkillsRepositoriesService {
     options: SkillsRepositoriesServiceOptions = {},
   ) {
     this.logger = logger.child({ service: "skills-repositories" });
+    this.reposDirectory = options.reposDirectory ?? defaultReposDirectory();
     this.buildConfigReader =
       options.buildConfigReader ?? new LocalSkillsRepositoryBuildConfigReader();
     this.repositoryCloner = options.repositoryCloner ?? new GitSkillsRepositoryCloner();
+    this.repositoryUpdater = options.repositoryUpdater ?? new GitSkillsRepositoryUpdater();
     this.gitMetadataRemover =
       options.gitMetadataRemover ?? new LocalSkillsRepositoryGitMetadataRemover();
     this.repositoryDirectoryRemover =
@@ -176,6 +215,40 @@ export class SkillsRepositoriesService {
     this.logger.debug("listing downloaded skills repositories");
 
     return this.repositoryStore.listDownloadedRepositories();
+  }
+
+  async installRepository(
+    options: InstallSkillsRepositoryOptions,
+  ): Promise<InstallSkillsRepositoryResult> {
+    const repository = parseRepositoryReference(options.repositoryReference);
+    const destinationDirectory = join(
+      this.reposDirectory,
+      repository.owner,
+      repository.name,
+    );
+    const downloadedRepositories = await this.repositoryStore.listDownloadedRepositories();
+    const operation = downloadedRepositories.some(
+      (downloadedRepository) =>
+        downloadedRepository.owner === repository.owner &&
+        downloadedRepository.name === repository.name,
+    )
+      ? "update"
+      : "install";
+    const event = { repository, destinationDirectory, operation } as const;
+
+    this.logger.debug(
+      { repository, destinationDirectory },
+      "installing skills repository",
+    );
+    options.listener?.onInstallStarted?.(event);
+    if (operation === "update") {
+      await this.repositoryUpdater.updateRepository(destinationDirectory);
+    } else {
+      await this.repositoryCloner.cloneRepository(repository, destinationDirectory);
+    }
+    options.listener?.onInstallCompleted?.(event);
+
+    return event;
   }
 
   async buildRepository(
@@ -292,6 +365,10 @@ function destinationDirectoryName(repository: SkillsRepository): string {
 
 function repositoryUrl(repository: SkillsRepository): string {
   return `https://github.com/${repository.owner}/${repository.name}`;
+}
+
+function defaultReposDirectory(): string {
+  return join(homedir(), ".skilled", "repos");
 }
 
 function isValidOwner(owner: string): boolean {

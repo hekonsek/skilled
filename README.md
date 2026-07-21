@@ -14,6 +14,7 @@ npm test
 
 ```sh
 skilled version
+skilled repo install <owner>/<name>
 skilled repo list
 skilled repo build [--dir <directory>]
 ```

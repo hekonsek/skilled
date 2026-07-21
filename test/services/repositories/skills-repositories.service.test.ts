@@ -15,6 +15,7 @@ import {
   type SkillsRepositoryDirectoryRemover,
   type SkillsRepositoryGitMetadataRemover,
   type SkillsRepositoryStore,
+  type SkillsRepositoryUpdater,
 } from "../../../src/services/repositories/skills-repositories.service.js";
 
 const temporaryDirectories: string[] = [];
@@ -109,6 +110,96 @@ describe("SkillsRepositoriesService", () => {
     assert.deepEqual(await service.listDownloadedRepositories(), [
       { owner: "myorg", name: "skills" },
     ]);
+  });
+
+  it("installs a repository from an owner/name reference", async () => {
+    const cloner = new RecordingSkillsRepositoryCloner();
+    const events: string[] = [];
+    const service = new SkillsRepositoriesService(
+      new StaticSkillsRepositoryStore([]),
+      pino({ level: "silent" }),
+      {
+        reposDirectory: "/home/test/.skilled/repos",
+        repositoryCloner: cloner,
+      },
+    );
+
+    assert.deepEqual(
+      await service.installRepository({
+        repositoryReference: "hekonsek/skilled-repo",
+        listener: {
+          onInstallStarted(event) {
+            events.push(`started ${event.repository.owner}/${event.repository.name}`);
+          },
+          onInstallCompleted(event) {
+            events.push(`completed ${event.destinationDirectory}`);
+          },
+        },
+      }),
+      {
+        repository: { owner: "hekonsek", name: "skilled-repo" },
+        destinationDirectory: "/home/test/.skilled/repos/hekonsek/skilled-repo",
+        operation: "install",
+      },
+    );
+    assert.deepEqual(cloner.cloneRequests, [
+      {
+        repository: { owner: "hekonsek", name: "skilled-repo" },
+        destinationDirectory: "/home/test/.skilled/repos/hekonsek/skilled-repo",
+      },
+    ]);
+    assert.deepEqual(events, [
+      "started hekonsek/skilled-repo",
+      "completed /home/test/.skilled/repos/hekonsek/skilled-repo",
+    ]);
+  });
+
+  it("updates an installed repository in place", async () => {
+    const cloner = new RecordingSkillsRepositoryCloner();
+    const updater = new RecordingSkillsRepositoryUpdater();
+    const service = new SkillsRepositoriesService(
+      new StaticSkillsRepositoryStore([
+        { owner: "hekonsek", name: "skilled-repo" },
+      ]),
+      pino({ level: "silent" }),
+      {
+        reposDirectory: "/home/test/.skilled/repos",
+        repositoryCloner: cloner,
+        repositoryUpdater: updater,
+      },
+    );
+
+    assert.deepEqual(
+      await service.installRepository({
+        repositoryReference: "hekonsek/skilled-repo",
+      }),
+      {
+        repository: { owner: "hekonsek", name: "skilled-repo" },
+        destinationDirectory: "/home/test/.skilled/repos/hekonsek/skilled-repo",
+        operation: "update",
+      },
+    );
+    assert.deepEqual(cloner.cloneRequests, []);
+    assert.deepEqual(updater.repositoryDirectories, [
+      "/home/test/.skilled/repos/hekonsek/skilled-repo",
+    ]);
+  });
+
+  it("rejects an invalid repository reference before cloning", async () => {
+    const cloner = new RecordingSkillsRepositoryCloner();
+    const updater = new RecordingSkillsRepositoryUpdater();
+    const service = new SkillsRepositoriesService(
+      new StaticSkillsRepositoryStore([]),
+      pino({ level: "silent" }),
+      { repositoryCloner: cloner, repositoryUpdater: updater },
+    );
+
+    await assert.rejects(
+      service.installRepository({ repositoryReference: "invalid" }),
+      /Invalid skill repository reference: invalid/,
+    );
+    assert.deepEqual(cloner.cloneRequests, []);
+    assert.deepEqual(updater.repositoryDirectories, []);
   });
 
   it("clones configured repositories into build output directories", async () => {
@@ -262,6 +353,14 @@ class RecordingSkillsRepositoryDirectoryRemover
   async removeRepositoryDirectory(repositoryDirectory: string): Promise<void> {
     this.repositoryDirectories.push(repositoryDirectory);
     this.operations.push(`remove ${repositoryDirectory}`);
+  }
+}
+
+class RecordingSkillsRepositoryUpdater implements SkillsRepositoryUpdater {
+  readonly repositoryDirectories: string[] = [];
+
+  async updateRepository(repositoryDirectory: string): Promise<void> {
+    this.repositoryDirectories.push(repositoryDirectory);
   }
 }
 
