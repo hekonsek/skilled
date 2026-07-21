@@ -14,3 +14,5 @@ skilled repo install hekonsek/skilled-repo
 Clones the remote skills repository onto the local device. If the repository is already
 installed, runs `git pull --ff-only` in the existing checkout so Git downloads and
 fast-forwards only the missing changes.
+
+If there are uncommited changes in local repo, remove local repo and create fresh clone.
