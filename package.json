@@ -1,8 +1,15 @@
 {
-  "name": "skilled",
+  "name": "@hekonsek/skilled",
   "version": "0.1.0",
   "description": "CLI tool for working with agentic AI skills.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hekonsek/skilled.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "skilled": "./dist/src/index.js"
   },
