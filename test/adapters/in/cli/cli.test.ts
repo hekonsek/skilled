@@ -5,6 +5,7 @@ import { createCli } from "../../../../src/adapters/in/cli/cli.js";
 import type {
   SkillsRepositoryBuildConfig,
   SkillsRepositoryBuildConfigReader,
+  SkillsRepositoryChangesChecker,
   SkillsRepositoryCloner,
   SkillsRepositoryDirectoryRemover,
   SkillsRepositoryUpdater,
@@ -84,6 +85,7 @@ describe("createCli", () => {
       ]),
       repositoryCloner: cloner,
       repositoryUpdater: updater,
+      repositoryChangesChecker: new StaticSkillsRepositoryChangesChecker(false),
       reposDirectory: "/home/test/.skilled/repos",
     }).parseAsync(["node", "skilled", "repo", "install", "hekonsek/skilled-repo"]);
 
@@ -95,6 +97,44 @@ describe("createCli", () => {
     assert.deepEqual(cloner.cloneRequests, []);
     assert.deepEqual(updater.repositoryDirectories, [
       "/home/test/.skilled/repos/hekonsek/skilled-repo",
+    ]);
+  });
+
+  it("replaces an installed GitHub repository with uncommitted changes", async () => {
+    const stdout = new MemoryWritable();
+    const stderr = new MemoryWritable();
+    const cloner = new RecordingSkillsRepositoryCloner();
+    const updater = new RecordingSkillsRepositoryUpdater();
+    const remover = new RecordingSkillsRepositoryDirectoryRemover();
+
+    await createCli({
+      version: "1.2.3",
+      stdout,
+      stderr,
+      repositoryStore: new StaticSkillsRepositoryStore([
+        { owner: "hekonsek", name: "skilled-repo" },
+      ]),
+      repositoryCloner: cloner,
+      repositoryUpdater: updater,
+      repositoryChangesChecker: new StaticSkillsRepositoryChangesChecker(true),
+      repositoryDirectoryRemover: remover,
+      reposDirectory: "/home/test/.skilled/repos",
+    }).parseAsync(["node", "skilled", "repo", "install", "hekonsek/skilled-repo"]);
+
+    assert.equal(stdout.toString(), "📦 hekonsek/skilled-repo\n");
+    assert.equal(
+      stderr.toString(),
+      "• Updating hekonsek/skilled-repo\n✓ Updated hekonsek/skilled-repo.\n",
+    );
+    assert.deepEqual(updater.repositoryDirectories, []);
+    assert.deepEqual(remover.repositoryDirectories, [
+      "/home/test/.skilled/repos/hekonsek/skilled-repo",
+    ]);
+    assert.deepEqual(cloner.cloneRequests, [
+      {
+        repository: { owner: "hekonsek", name: "skilled-repo" },
+        destinationDirectory: "/home/test/.skilled/repos/hekonsek/skilled-repo",
+      },
     ]);
   });
 
@@ -219,6 +259,16 @@ class RecordingSkillsRepositoryUpdater implements SkillsRepositoryUpdater {
 
   async updateRepository(repositoryDirectory: string): Promise<void> {
     this.repositoryDirectories.push(repositoryDirectory);
+  }
+}
+
+class StaticSkillsRepositoryChangesChecker
+  implements SkillsRepositoryChangesChecker
+{
+  constructor(private readonly hasChanges: boolean) {}
+
+  async hasUncommittedChanges(): Promise<boolean> {
+    return this.hasChanges;
   }
 }
 

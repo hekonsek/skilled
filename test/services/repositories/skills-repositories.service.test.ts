@@ -7,11 +7,13 @@ import pino from "pino";
 import {
   LocalSkillsRepositoryBuildConfigReader,
   LocalSkillsRepositoryDirectoryRemover,
+  GitSkillsRepositoryChangesChecker,
   LocalSkillsRepositoryGitMetadataRemover,
   LocalSkillsRepositoryStore,
   SkillsRepositoriesService,
   type SkillsRepository,
   type SkillsRepositoryCloner,
+  type SkillsRepositoryChangesChecker,
   type SkillsRepositoryDirectoryRemover,
   type SkillsRepositoryGitMetadataRemover,
   type SkillsRepositoryStore,
@@ -98,6 +100,20 @@ describe("LocalSkillsRepositoryDirectoryRemover", () => {
   });
 });
 
+describe("GitSkillsRepositoryChangesChecker", () => {
+  it("detects uncommitted files in a Git repository", async () => {
+    const root = await createTemporaryDirectory();
+    await runGit(root, "init");
+    const checker = new GitSkillsRepositoryChangesChecker();
+
+    assert.equal(await checker.hasUncommittedChanges(root), false);
+
+    await writeFile(join(root, "README.md"), "uncommitted content");
+
+    assert.equal(await checker.hasUncommittedChanges(root), true);
+  });
+});
+
 describe("SkillsRepositoriesService", () => {
   it("returns repositories from the configured store", async () => {
     const store: SkillsRepositoryStore = {
@@ -166,6 +182,7 @@ describe("SkillsRepositoriesService", () => {
         reposDirectory: "/home/test/.skilled/repos",
         repositoryCloner: cloner,
         repositoryUpdater: updater,
+        repositoryChangesChecker: new StaticSkillsRepositoryChangesChecker(false),
       },
     );
 
@@ -182,6 +199,42 @@ describe("SkillsRepositoriesService", () => {
     assert.deepEqual(cloner.cloneRequests, []);
     assert.deepEqual(updater.repositoryDirectories, [
       "/home/test/.skilled/repos/hekonsek/skilled-repo",
+    ]);
+  });
+
+  it("replaces an installed repository when it has uncommitted changes", async () => {
+    const operations: string[] = [];
+    const cloner = new RecordingSkillsRepositoryCloner(operations);
+    const updater = new RecordingSkillsRepositoryUpdater();
+    const remover = new RecordingSkillsRepositoryDirectoryRemover(operations);
+    const service = new SkillsRepositoriesService(
+      new StaticSkillsRepositoryStore([
+        { owner: "hekonsek", name: "skilled-repo" },
+      ]),
+      pino({ level: "silent" }),
+      {
+        reposDirectory: "/home/test/.skilled/repos",
+        repositoryCloner: cloner,
+        repositoryUpdater: updater,
+        repositoryChangesChecker: new StaticSkillsRepositoryChangesChecker(true),
+        repositoryDirectoryRemover: remover,
+      },
+    );
+
+    assert.deepEqual(
+      await service.installRepository({
+        repositoryReference: "hekonsek/skilled-repo",
+      }),
+      {
+        repository: { owner: "hekonsek", name: "skilled-repo" },
+        destinationDirectory: "/home/test/.skilled/repos/hekonsek/skilled-repo",
+        operation: "update",
+      },
+    );
+    assert.deepEqual(updater.repositoryDirectories, []);
+    assert.deepEqual(operations, [
+      "remove /home/test/.skilled/repos/hekonsek/skilled-repo",
+      "clone hekonsek/skilled-repo /home/test/.skilled/repos/hekonsek/skilled-repo",
     ]);
   });
 
@@ -356,6 +409,16 @@ class RecordingSkillsRepositoryDirectoryRemover
   }
 }
 
+class StaticSkillsRepositoryChangesChecker
+  implements SkillsRepositoryChangesChecker
+{
+  constructor(private readonly hasChanges: boolean) {}
+
+  async hasUncommittedChanges(): Promise<boolean> {
+    return this.hasChanges;
+  }
+}
+
 class RecordingSkillsRepositoryUpdater implements SkillsRepositoryUpdater {
   readonly repositoryDirectories: string[] = [];
 
@@ -382,4 +445,18 @@ async function createTemporaryDirectory(): Promise<string> {
   temporaryDirectories.push(path);
 
   return path;
+}
+
+async function runGit(directory: string, ...args: readonly string[]): Promise<void> {
+  const { execFile } = await import("node:child_process");
+
+  await new Promise<void>((resolve, reject) => {
+    execFile("git", ["-C", directory, ...args], (error) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    });
+  });
 }

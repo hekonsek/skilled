@@ -33,6 +33,10 @@ export interface SkillsRepositoryUpdater {
   updateRepository(repositoryDirectory: string): Promise<void>;
 }
 
+export interface SkillsRepositoryChangesChecker {
+  hasUncommittedChanges(repositoryDirectory: string): Promise<boolean>;
+}
+
 export interface InstallSkillsRepositoryOptions {
   readonly repositoryReference: string;
   readonly listener?: SkillsRepositoryInstallListener;
@@ -160,6 +164,21 @@ export class GitSkillsRepositoryUpdater implements SkillsRepositoryUpdater {
   }
 }
 
+export class GitSkillsRepositoryChangesChecker
+  implements SkillsRepositoryChangesChecker
+{
+  async hasUncommittedChanges(repositoryDirectory: string): Promise<boolean> {
+    const { stdout } = await execFile("git", [
+      "-C",
+      repositoryDirectory,
+      "status",
+      "--porcelain",
+    ]);
+
+    return stdout.length > 0;
+  }
+}
+
 export class LocalSkillsRepositoryGitMetadataRemover
   implements SkillsRepositoryGitMetadataRemover
 {
@@ -181,6 +200,7 @@ export interface SkillsRepositoriesServiceOptions {
   readonly buildConfigReader?: SkillsRepositoryBuildConfigReader;
   readonly repositoryCloner?: SkillsRepositoryCloner;
   readonly repositoryUpdater?: SkillsRepositoryUpdater;
+  readonly repositoryChangesChecker?: SkillsRepositoryChangesChecker;
   readonly gitMetadataRemover?: SkillsRepositoryGitMetadataRemover;
   readonly repositoryDirectoryRemover?: SkillsRepositoryDirectoryRemover;
 }
@@ -191,6 +211,7 @@ export class SkillsRepositoriesService {
   private readonly buildConfigReader: SkillsRepositoryBuildConfigReader;
   private readonly repositoryCloner: SkillsRepositoryCloner;
   private readonly repositoryUpdater: SkillsRepositoryUpdater;
+  private readonly repositoryChangesChecker: SkillsRepositoryChangesChecker;
   private readonly gitMetadataRemover: SkillsRepositoryGitMetadataRemover;
   private readonly repositoryDirectoryRemover: SkillsRepositoryDirectoryRemover;
 
@@ -205,6 +226,8 @@ export class SkillsRepositoriesService {
       options.buildConfigReader ?? new LocalSkillsRepositoryBuildConfigReader();
     this.repositoryCloner = options.repositoryCloner ?? new GitSkillsRepositoryCloner();
     this.repositoryUpdater = options.repositoryUpdater ?? new GitSkillsRepositoryUpdater();
+    this.repositoryChangesChecker =
+      options.repositoryChangesChecker ?? new GitSkillsRepositoryChangesChecker();
     this.gitMetadataRemover =
       options.gitMetadataRemover ?? new LocalSkillsRepositoryGitMetadataRemover();
     this.repositoryDirectoryRemover =
@@ -242,7 +265,18 @@ export class SkillsRepositoriesService {
     );
     options.listener?.onInstallStarted?.(event);
     if (operation === "update") {
-      await this.repositoryUpdater.updateRepository(destinationDirectory);
+      if (
+        await this.repositoryChangesChecker.hasUncommittedChanges(
+          destinationDirectory,
+        )
+      ) {
+        await this.repositoryDirectoryRemover.removeRepositoryDirectory(
+          destinationDirectory,
+        );
+        await this.repositoryCloner.cloneRepository(repository, destinationDirectory);
+      } else {
+        await this.repositoryUpdater.updateRepository(destinationDirectory);
+      }
     } else {
       await this.repositoryCloner.cloneRepository(repository, destinationDirectory);
     }

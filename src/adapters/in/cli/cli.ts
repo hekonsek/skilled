@@ -8,6 +8,7 @@ import {
   type SkillsRepositoryBuildConfigReader,
   type SkillsRepositoryCloner,
   type SkillsRepositoryDirectoryRemover,
+  type SkillsRepositoryChangesChecker,
   type SkillsRepositoryInstallListener,
   type SkillsRepository,
   type SkillsRepositoryUpdater,
@@ -34,6 +35,7 @@ export interface CreateCliOptions {
   readonly buildConfigReader?: SkillsRepositoryBuildConfigReader;
   readonly repositoryCloner?: SkillsRepositoryCloner;
   readonly repositoryDirectoryRemover?: SkillsRepositoryDirectoryRemover;
+  readonly repositoryChangesChecker?: SkillsRepositoryChangesChecker;
   readonly repositoryUpdater?: SkillsRepositoryUpdater;
   readonly reposDirectory?: string;
   readonly currentDirectory?: string;
@@ -86,6 +88,8 @@ export function createCli(options: CreateCliOptions): Command {
         reposDirectory: options.reposDirectory,
         repositoryCloner: options.repositoryCloner,
         repositoryUpdater: options.repositoryUpdater,
+        repositoryChangesChecker: options.repositoryChangesChecker,
+        repositoryDirectoryRemover: options.repositoryDirectoryRemover,
       });
 
       await service.installRepository({
