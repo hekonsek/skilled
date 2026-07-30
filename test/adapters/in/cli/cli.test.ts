@@ -15,6 +15,10 @@ import type {
   SkillsRepositoryStore,
   SkillsRepositoryActivator,
 } from "../../../../src/services/repositories/skills-repositories.service.js";
+import type {
+  Skill,
+  SkillsStore,
+} from "../../../../src/services/skills/skills.service.js";
 
 describe("createCli", () => {
   it("prints the current version", async () => {
@@ -44,6 +48,38 @@ describe("createCli", () => {
     }).parseAsync(["node", "skilled", "repo", "list"]);
 
     assert.equal(stdout.toString(), "📦 myorg/skills\n📦 myuser/myskills\n");
+  });
+
+  it("prints skills in the currently used skills repository", async () => {
+    const stdout = new MemoryWritable();
+
+    await createCli({
+      version: "1.2.3",
+      stdout,
+      stderr: new MemoryWritable(),
+      skillsStore: new StaticSkillsStore([
+        { name: "skill-node" },
+        { name: "skill-terraform" },
+      ]),
+    }).parseAsync(["node", "skilled", "skills", "list"]);
+
+    assert.equal(stdout.toString(), "🧩 skill-node\n🧩 skill-terraform\n");
+  });
+
+  it("reports when the currently used skills repository contains no skills", async () => {
+    const stderr = new MemoryWritable();
+
+    await createCli({
+      version: "1.2.3",
+      stdout: new MemoryWritable(),
+      stderr,
+      skillsStore: new StaticSkillsStore([]),
+    }).parseAsync(["node", "skilled", "skills", "list"]);
+
+    assert.equal(
+      stderr.toString(),
+      "No skills found in the currently used skills repository.\n",
+    );
   });
 
   it("installs a GitHub repository into the local repositories directory", async () => {
@@ -314,6 +350,14 @@ class StaticSkillsRepositoryStore implements SkillsRepositoryStore {
 
   async listDownloadedRepositories(): Promise<readonly SkillsRepository[]> {
     return this.repositories;
+  }
+}
+
+class StaticSkillsStore implements SkillsStore {
+  constructor(private readonly skills: readonly Skill[]) {}
+
+  async listSkills(): Promise<readonly Skill[]> {
+    return this.skills;
   }
 }
 

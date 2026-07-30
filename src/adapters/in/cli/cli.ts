@@ -18,6 +18,11 @@ import {
   SkillsRepositoriesService,
   type SkillsRepositoryStore,
 } from "../../../services/repositories/skills-repositories.service.js";
+import {
+  LocalSkillsStore,
+  SkillsService,
+  type SkillsStore,
+} from "../../../services/skills/skills.service.js";
 
 const loggerLevels = [
   "silent",
@@ -41,6 +46,7 @@ export interface CreateCliOptions {
   readonly repositoryUpdater?: SkillsRepositoryUpdater;
   readonly submoduleManager?: SkillsRepositorySubmoduleManager;
   readonly repositoryActivator?: SkillsRepositoryActivator;
+  readonly skillsStore?: SkillsStore;
   readonly reposDirectory?: string;
   readonly skillsDirectory?: string;
   readonly currentDirectory?: string;
@@ -73,6 +79,33 @@ export function createCli(options: CreateCliOptions): Command {
     .description("Print the current skilled version.")
     .action(() => {
       stdout.write(`${options.version}\n`);
+    });
+
+  const skills = program.command("skills").description("Manage skills.");
+
+  skills
+    .command("list")
+    .description("List skills in the currently used skills repository.")
+    .action(async () => {
+      const globalOptions = program.opts<GlobalOptions>();
+      const logger = pino(
+        { level: globalOptions.logger },
+        pino.destination({ dest: 2, sync: true }),
+      ).child({ adapter: "cli", command: "skills list" });
+      const service = new SkillsService(
+        options.skillsStore ??
+          new LocalSkillsStore({ skillsDirectory: options.skillsDirectory }),
+        logger,
+      );
+      const installedSkills = await service.listSkills();
+
+      for (const skill of installedSkills) {
+        stdout.write(`${skillMarker(stdout)} ${skill.name}\n`);
+      }
+
+      if (installedSkills.length === 0) {
+        stderr.write("No skills found in the currently used skills repository.\n");
+      }
     });
 
   const repo = program.command("repo").description("Manage skills repositories.");
@@ -391,6 +424,10 @@ function updateSpinner(spinner: Ora | undefined, text: string): void {
 
 function repositoryMarker(stdout: NodeJS.WritableStream): string {
   return isInteractiveOutput(stdout) ? chalk.green("📦") : "📦";
+}
+
+function skillMarker(stdout: NodeJS.WritableStream): string {
+  return isInteractiveOutput(stdout) ? chalk.green("🧩") : "🧩";
 }
 
 function progressMarker(stderr: NodeJS.WritableStream): string {
