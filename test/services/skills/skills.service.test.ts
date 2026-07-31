@@ -8,6 +8,7 @@ import {
   LocalSkillsStore,
   SkillsService,
   type Skill,
+  type SkillMetadataReader,
   type SkillsStore,
 } from "../../../src/services/skills/skills.service.js";
 
@@ -59,6 +60,35 @@ describe("LocalSkillsStore", () => {
 
     assert.deepEqual(await store.listSkills(), []);
   });
+
+  it("includes repository update metadata when requested", async () => {
+    const root = await createTemporaryDirectory();
+    const skillsDirectory = join(root, ".agents", "skills");
+    await writeSkill(skillsDirectory, "myorg-skill-node", "skill-node");
+    const updated = new Date("2026-07-30T10:00:00.000Z");
+    const metadataReader = new StaticSkillMetadataReader(updated);
+    const store = new LocalSkillsStore({ skillsDirectory, metadataReader });
+
+    assert.deepEqual(await store.listSkills({ includeMetadata: true }), [
+      { name: "skill-node", updated },
+    ]);
+    assert.deepEqual(metadataReader.skillDirectories, [
+      join(skillsDirectory, "myorg-skill-node"),
+    ]);
+  });
+
+  it("does not read repository metadata unless requested", async () => {
+    const root = await createTemporaryDirectory();
+    const skillsDirectory = join(root, ".agents", "skills");
+    await writeSkill(skillsDirectory, "myorg-skill-node", "skill-node");
+    const metadataReader = new StaticSkillMetadataReader(
+      new Date("2026-07-30T10:00:00.000Z"),
+    );
+    const store = new LocalSkillsStore({ skillsDirectory, metadataReader });
+
+    assert.deepEqual(await store.listSkills(), [{ name: "skill-node" }]);
+    assert.deepEqual(metadataReader.skillDirectories, []);
+  });
 });
 
 describe("SkillsService", () => {
@@ -75,6 +105,18 @@ class StaticSkillsStore implements SkillsStore {
 
   async listSkills(): Promise<readonly Skill[]> {
     return this.skills;
+  }
+}
+
+class StaticSkillMetadataReader implements SkillMetadataReader {
+  readonly skillDirectories: string[] = [];
+
+  constructor(private readonly updated: Date | undefined) {}
+
+  async readUpdated(skillDirectory: string): Promise<Date | undefined> {
+    this.skillDirectories.push(skillDirectory);
+
+    return this.updated;
   }
 }
 

@@ -1,34 +1,92 @@
-import { readFile, readdir } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import type { Logger } from "pino";
 import { parse } from "yaml";
 
+const execFile = promisify(execFileCallback);
+
 export interface Skill {
   readonly name: string;
+  readonly updated?: Date;
 }
 
 export interface SkillsStore {
-  listSkills(): Promise<readonly Skill[]>;
+  listSkills(options?: ListSkillsOptions): Promise<readonly Skill[]>;
+}
+
+export interface ListSkillsOptions {
+  readonly includeMetadata?: boolean;
+}
+
+export interface SkillMetadataReader {
+  readUpdated(skillDirectory: string): Promise<Date | undefined>;
 }
 
 export interface LocalSkillsStoreOptions {
   readonly skillsDirectory?: string;
+  readonly metadataReader?: SkillMetadataReader;
+}
+
+export class GitSkillMetadataReader implements SkillMetadataReader {
+  async readUpdated(skillDirectory: string): Promise<Date | undefined> {
+    if (!(await isFile(join(skillDirectory, ".git")))) {
+      return undefined;
+    }
+
+    const { stdout: superprojectDirectory } = await execFile("git", [
+      "-C",
+      skillDirectory,
+      "rev-parse",
+      "--show-superproject-working-tree",
+    ]);
+    if (superprojectDirectory.trim() === "") {
+      return undefined;
+    }
+
+    const { stdout } = await execFile("git", [
+      "-C",
+      skillDirectory,
+      "log",
+      "-1",
+      "--format=%ct",
+    ]);
+    const timestamp = stdout.trim();
+    if (timestamp === "") {
+      return undefined;
+    }
+
+    return new Date(Number(timestamp) * 1_000);
+  }
 }
 
 export class LocalSkillsStore implements SkillsStore {
   private readonly skillsDirectory: string;
+  private readonly metadataReader: SkillMetadataReader;
 
   constructor(options: LocalSkillsStoreOptions = {}) {
     this.skillsDirectory = options.skillsDirectory ?? defaultSkillsDirectory();
+    this.metadataReader = options.metadataReader ?? new GitSkillMetadataReader();
   }
 
-  async listSkills(): Promise<readonly Skill[]> {
+  async listSkills(options: ListSkillsOptions = {}): Promise<readonly Skill[]> {
     const entries = await readDirectoryEntries(this.skillsDirectory);
     const skills = await Promise.all(
       entries
         .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
-        .map((entry) => readSkill(join(this.skillsDirectory, entry.name))),
+        .map(async (entry) => {
+          const skillDirectory = join(this.skillsDirectory, entry.name);
+          const skill = await readSkill(skillDirectory);
+          if (skill === undefined || options.includeMetadata !== true) {
+            return skill;
+          }
+
+          const updated = await this.metadataReader.readUpdated(skillDirectory);
+
+          return updated === undefined ? skill : { ...skill, updated };
+        }),
     );
 
     return skills
@@ -47,10 +105,10 @@ export class SkillsService {
     this.logger = logger.child({ service: "skills" });
   }
 
-  async listSkills(): Promise<readonly Skill[]> {
+  async listSkills(options: ListSkillsOptions = {}): Promise<readonly Skill[]> {
     this.logger.debug("listing skills in currently used skills repository");
 
-    return this.skillsStore.listSkills();
+    return this.skillsStore.listSkills(options);
   }
 }
 
@@ -109,6 +167,18 @@ function parseFrontmatter(contents: string, skillDirectory: string): string {
 
 function defaultSkillsDirectory(): string {
   return join(homedir(), ".agents", "skills");
+}
+
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile();
+  } catch (error) {
+    if (isNodeError(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")) {
+      return false;
+    }
+
+    throw error;
+  }
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

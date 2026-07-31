@@ -66,6 +66,42 @@ describe("createCli", () => {
     assert.equal(stdout.toString(), "🧩 skill-node\n🧩 skill-terraform\n");
   });
 
+  it("prints skill update metadata in a human-friendly format", async () => {
+    const stdout = new MemoryWritable();
+
+    await createCli({
+      version: "1.2.3",
+      stdout,
+      stderr: new MemoryWritable(),
+      skillsStore: new StaticSkillsStore([
+        { name: "skill-node", updated: new Date("2026-07-30T10:00:00.000Z") },
+        { name: "local-skill" },
+      ]),
+      now: () => new Date("2026-07-31T10:00:00.000Z"),
+    }).parseAsync(["node", "skilled", "skills", "list", "--details"]);
+
+    assert.equal(
+      stdout.toString(),
+      "🧩 skill-node (updated: 1d ago)\n🧩 local-skill (updated: -)\n",
+    );
+  });
+
+  it("lists the skills details option in help output", () => {
+    const program = createCli({
+      version: "1.2.3",
+      stdout: new MemoryWritable(),
+      stderr: new MemoryWritable(),
+    });
+    const skillsCommand = program.commands.find(
+      (command) => command.name() === "skills",
+    );
+    const listCommand = skillsCommand?.commands.find(
+      (command) => command.name() === "list",
+    );
+
+    assert.match(listCommand?.helpInformation() ?? "", /--details/);
+  });
+
   it("reports when the currently used skills repository contains no skills", async () => {
     const stderr = new MemoryWritable();
 

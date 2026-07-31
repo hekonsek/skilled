@@ -21,6 +21,7 @@ import {
 import {
   LocalSkillsStore,
   SkillsService,
+  type SkillMetadataReader,
   type SkillsStore,
 } from "../../../services/skills/skills.service.js";
 
@@ -47,9 +48,11 @@ export interface CreateCliOptions {
   readonly submoduleManager?: SkillsRepositorySubmoduleManager;
   readonly repositoryActivator?: SkillsRepositoryActivator;
   readonly skillsStore?: SkillsStore;
+  readonly skillMetadataReader?: SkillMetadataReader;
   readonly reposDirectory?: string;
   readonly skillsDirectory?: string;
   readonly currentDirectory?: string;
+  readonly now?: () => Date;
 }
 
 interface GlobalOptions {
@@ -59,6 +62,10 @@ interface GlobalOptions {
 interface BuildCommandOptions {
   readonly dir?: string;
   readonly installedRepo?: string;
+}
+
+interface ListSkillsCommandOptions {
+  readonly details?: boolean;
 }
 
 export function createCli(options: CreateCliOptions): Command {
@@ -86,7 +93,8 @@ export function createCli(options: CreateCliOptions): Command {
   skills
     .command("list")
     .description("List skills in the currently used skills repository.")
-    .action(async () => {
+    .option("--details", "display additional metadata details")
+    .action(async (listOptions: ListSkillsCommandOptions) => {
       const globalOptions = program.opts<GlobalOptions>();
       const logger = pino(
         { level: globalOptions.logger },
@@ -94,13 +102,23 @@ export function createCli(options: CreateCliOptions): Command {
       ).child({ adapter: "cli", command: "skills list" });
       const service = new SkillsService(
         options.skillsStore ??
-          new LocalSkillsStore({ skillsDirectory: options.skillsDirectory }),
+          new LocalSkillsStore({
+            skillsDirectory: options.skillsDirectory,
+            metadataReader: options.skillMetadataReader,
+          }),
         logger,
       );
-      const installedSkills = await service.listSkills();
+      const installedSkills = await service.listSkills({
+        includeMetadata: listOptions.details === true,
+      });
+      const now = options.now?.() ?? new Date();
 
       for (const skill of installedSkills) {
-        stdout.write(`${skillMarker(stdout)} ${skill.name}\n`);
+        const details =
+          listOptions.details === true
+            ? ` (updated: ${formatUpdated(skill.updated, now)})`
+            : "";
+        stdout.write(`${skillMarker(stdout)} ${skill.name}${details}\n`);
       }
 
       if (installedSkills.length === 0) {
@@ -451,4 +469,30 @@ function isInteractiveOutput(stream: NodeJS.WritableStream): boolean {
 
 function shouldUseSpinner(stderr: NodeJS.WritableStream): boolean {
   return isInteractiveOutput(stderr) && process.env.CI === undefined;
+}
+
+function formatUpdated(updated: Date | undefined, now: Date): string {
+  if (updated === undefined) {
+    return "-";
+  }
+
+  const elapsedSeconds = Math.max(
+    0,
+    Math.floor((now.getTime() - updated.getTime()) / 1_000),
+  );
+  const units = [
+    { suffix: "y", seconds: 365 * 24 * 60 * 60 },
+    { suffix: "mo", seconds: 30 * 24 * 60 * 60 },
+    { suffix: "d", seconds: 24 * 60 * 60 },
+    { suffix: "h", seconds: 60 * 60 },
+    { suffix: "m", seconds: 60 },
+  ] as const;
+
+  for (const unit of units) {
+    if (elapsedSeconds >= unit.seconds) {
+      return `${Math.floor(elapsedSeconds / unit.seconds)}${unit.suffix} ago`;
+    }
+  }
+
+  return `${elapsedSeconds}s ago`;
 }
