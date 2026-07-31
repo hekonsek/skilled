@@ -82,7 +82,7 @@ describe("createCli", () => {
 
     assert.equal(
       stdout.toString(),
-      "🧩 skill-node (updated: 1d ago)\n🧩 local-skill (updated: -)\n",
+      "🧩 local-skill (updated: -)\n🧩 skill-node (updated: 1d ago)\n",
     );
   });
 
@@ -100,6 +100,57 @@ describe("createCli", () => {
     );
 
     assert.match(listCommand?.helpInformation() ?? "", /--details/);
+    assert.match(listCommand?.helpInformation() ?? "", /--sort <property>/);
+    assert.match(listCommand?.helpInformation() ?? "", /--sort-order <order>/);
+  });
+
+  it("sorts skills by name in ascending order", async () => {
+    const stdout = new MemoryWritable();
+
+    await createCli({
+      version: "1.2.3",
+      stdout,
+      stderr: new MemoryWritable(),
+      skillsStore: new StaticSkillsStore([
+        { name: "skill-terraform" },
+        { name: "skill-node" },
+      ]),
+    }).parseAsync([
+      "node",
+      "skilled",
+      "skills",
+      "list",
+      "--sort",
+      "name",
+      "--sort-order",
+      "asc",
+    ]);
+
+    assert.equal(stdout.toString(), "🧩 skill-node\n🧩 skill-terraform\n");
+  });
+
+  it("sorts skills by update time without displaying details", async () => {
+    const stdout = new MemoryWritable();
+
+    await createCli({
+      version: "1.2.3",
+      stdout,
+      stderr: new MemoryWritable(),
+      skillsStore: new StaticSkillsStore([
+        { name: "old", updated: new Date("2026-07-01T10:00:00.000Z") },
+        { name: "local" },
+        { name: "new", updated: new Date("2026-07-30T10:00:00.000Z") },
+      ]),
+    }).parseAsync([
+      "node",
+      "skilled",
+      "skills",
+      "list",
+      "--sort=updated",
+      "--sort-order=desc",
+    ]);
+
+    assert.equal(stdout.toString(), "🧩 new\n🧩 old\n🧩 local\n");
   });
 
   it("reports when the currently used skills repository contains no skills", async () => {

@@ -19,7 +19,12 @@ export interface SkillsStore {
 
 export interface ListSkillsOptions {
   readonly includeMetadata?: boolean;
+  readonly sort?: SkillSortProperty;
+  readonly sortOrder?: SkillSortOrder;
 }
+
+export type SkillSortProperty = "name" | "updated";
+export type SkillSortOrder = "asc" | "desc";
 
 export interface SkillMetadataReader {
   readUpdated(skillDirectory: string): Promise<Date | undefined>;
@@ -107,9 +112,37 @@ export class SkillsService {
 
   async listSkills(options: ListSkillsOptions = {}): Promise<readonly Skill[]> {
     this.logger.debug("listing skills in currently used skills repository");
+    const sort = options.sort ?? "name";
+    const sortOrder = options.sortOrder ?? "asc";
+    const skills = await this.skillsStore.listSkills({
+      includeMetadata: options.includeMetadata === true || sort === "updated",
+    });
 
-    return this.skillsStore.listSkills(options);
+    return [...skills].sort((left, right) => {
+      const comparison = compareSkills(left, right, sort);
+
+      return sortOrder === "asc" ? comparison : -comparison;
+    });
   }
+}
+
+function compareSkills(
+  left: Skill,
+  right: Skill,
+  property: SkillSortProperty,
+): number {
+  if (property === "updated") {
+    if (left.updated === undefined) {
+      return right.updated === undefined ? 0 : -1;
+    }
+    if (right.updated === undefined) {
+      return 1;
+    }
+
+    return left.updated.getTime() - right.updated.getTime();
+  }
+
+  return left.name.localeCompare(right.name);
 }
 
 async function readDirectoryEntries(path: string) {

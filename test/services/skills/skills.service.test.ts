@@ -9,6 +9,7 @@ import {
   SkillsService,
   type Skill,
   type SkillMetadataReader,
+  type ListSkillsOptions,
   type SkillsStore,
 } from "../../../src/services/skills/skills.service.js";
 
@@ -98,6 +99,40 @@ describe("SkillsService", () => {
 
     assert.deepEqual(await service.listSkills(), [{ name: "skill-node" }]);
   });
+
+  it("sorts skills by name in ascending order by default", async () => {
+    const service = new SkillsService(
+      new StaticSkillsStore([
+        { name: "skill-node" },
+        { name: "skill-terraform" },
+      ]),
+      pino({ level: "silent" }),
+    );
+
+    assert.deepEqual(await service.listSkills(), [
+      { name: "skill-node" },
+      { name: "skill-terraform" },
+    ]);
+  });
+
+  it("loads metadata and sorts missing update times as oldest", async () => {
+    const store = new MetadataAwareSkillsStore([
+      { name: "old", updated: new Date("2026-07-01T10:00:00.000Z") },
+      { name: "local" },
+      { name: "new", updated: new Date("2026-07-30T10:00:00.000Z") },
+    ]);
+    const service = new SkillsService(store, pino({ level: "silent" }));
+
+    assert.deepEqual(
+      await service.listSkills({ sort: "updated", sortOrder: "asc" }),
+      [
+        { name: "local" },
+        { name: "old", updated: new Date("2026-07-01T10:00:00.000Z") },
+        { name: "new", updated: new Date("2026-07-30T10:00:00.000Z") },
+      ],
+    );
+    assert.equal(store.lastOptions?.includeMetadata, true);
+  });
 });
 
 class StaticSkillsStore implements SkillsStore {
@@ -105,6 +140,20 @@ class StaticSkillsStore implements SkillsStore {
 
   async listSkills(): Promise<readonly Skill[]> {
     return this.skills;
+  }
+}
+
+class MetadataAwareSkillsStore implements SkillsStore {
+  lastOptions: ListSkillsOptions | undefined;
+
+  constructor(private readonly skills: readonly Skill[]) {}
+
+  async listSkills(options?: ListSkillsOptions): Promise<readonly Skill[]> {
+    this.lastOptions = options;
+
+    return options?.includeMetadata === true
+      ? this.skills
+      : this.skills.map(({ name }) => ({ name }));
   }
 }
 

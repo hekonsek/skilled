@@ -22,6 +22,8 @@ import {
   LocalSkillsStore,
   SkillsService,
   type SkillMetadataReader,
+  type SkillSortOrder,
+  type SkillSortProperty,
   type SkillsStore,
 } from "../../../services/skills/skills.service.js";
 
@@ -66,6 +68,8 @@ interface BuildCommandOptions {
 
 interface ListSkillsCommandOptions {
   readonly details?: boolean;
+  readonly sort: SkillSortProperty;
+  readonly sortOrder: SkillSortOrder;
 }
 
 export function createCli(options: CreateCliOptions): Command {
@@ -94,6 +98,16 @@ export function createCli(options: CreateCliOptions): Command {
     .command("list")
     .description("List skills in the currently used skills repository.")
     .option("--details", "display additional metadata details")
+    .addOption(
+      new Option("--sort <property>", "property used to sort skills")
+        .choices(["name", "updated"])
+        .default("name"),
+    )
+    .addOption(
+      new Option("--sort-order <order>", "skill sort order")
+        .choices(["desc", "asc"])
+        .default("asc"),
+    )
     .action(async (listOptions: ListSkillsCommandOptions) => {
       const globalOptions = program.opts<GlobalOptions>();
       const logger = pino(
@@ -110,6 +124,8 @@ export function createCli(options: CreateCliOptions): Command {
       );
       const installedSkills = await service.listSkills({
         includeMetadata: listOptions.details === true,
+        sort: listOptions.sort,
+        sortOrder: listOptions.sortOrder,
       });
       const now = options.now?.() ?? new Date();
 

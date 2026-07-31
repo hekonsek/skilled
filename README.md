@@ -18,5 +18,5 @@ skilled repo install <owner>/<name>
 skilled repo list
 skilled repo use <owner>/<name>
 skilled repo build [--dir <directory> | --installed-repo <owner>/<name>]
-skilled skills list [--details]
+skilled skills list [--details] [--sort <name|updated>] [--sort-order <desc|asc>]
 ```
